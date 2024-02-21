@@ -214,6 +214,8 @@ struct mpv_node mp_input_get_bindings(struct input_ctx *ictx);
 
 void mp_input_sdl_gamepad_add(struct input_ctx *ictx);
 
+void mp_input_libinput_add(struct input_ctx *ictx);
+
 struct mp_ipc_ctx;
 struct mp_client_api;
 struct mpv_handle;

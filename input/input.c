@@ -1389,6 +1389,9 @@ void mp_input_load_config(struct input_ctx *ictx)
         talloc_free(tmp);
     }
 
+    // TODO: make optional
+    mp_input_libinput_add(ictx);
+
 #if HAVE_SDL2_GAMEPAD
     if (ictx->opts->use_gamepad) {
         mp_input_sdl_gamepad_add(ictx);

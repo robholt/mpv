@@ -215,7 +215,7 @@ struct vo_wayland_seat {
 static int check_for_resize(struct vo_wayland_state *wl, int edge_pixels,
                             enum xdg_toplevel_resize_edge *edge);
 static int get_mods(struct vo_wayland_seat *seat);
-static int lookupkey(int key);
+//static int lookupkey(int key);
 static int set_cursor_visibility(struct vo_wayland_seat *s, bool on);
 static int spawn_cursor(struct vo_wayland_state *wl);
 
@@ -1824,7 +1824,7 @@ static struct vo_wayland_output *find_output(struct vo_wayland_state *wl)
     return fallback_output;
 }
 
-static int lookupkey(int key)
+int lookupkey(int key)
 {
     const char *passthrough_keys = " -+*/<>`~!@#$%^&()_{}:;\"\',.?\\|=[]";
 

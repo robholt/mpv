@@ -740,6 +740,15 @@ if features['sdl2-gamepad']
     sources += files('input/sdl_gamepad.c')
 endif
 
+libinput = dependency('libinput', required: get_option('libinput'))
+libudev = dependency('libudev', required: get_option('libinput'))
+features += {'libinput': libinput.found()}
+if features['libinput']
+    dependencies += libinput
+    dependencies += libudev
+    sources += files('input/libinput.c')
+endif
+
 uchardet_opt = get_option('uchardet').require(
     features['iconv'],
     error_message: 'iconv was not found!',

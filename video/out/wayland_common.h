@@ -173,4 +173,6 @@ void vo_wayland_wait_events(struct vo *vo, int64_t until_time_ns);
 void vo_wayland_wait_frame(struct vo_wayland_state *wl);
 void vo_wayland_wakeup(struct vo *vo);
 
+int lookupkey(int key);
+
 #endif /* MPLAYER_WAYLAND_COMMON_H */
