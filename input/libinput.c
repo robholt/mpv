@@ -37,18 +37,7 @@ static void handle_keyboard_key(struct mp_input_src *src, struct libinput_event 
     struct priv *p = src->priv;
     struct libinput_event_keyboard *kbevent = libinput_event_get_keyboard_event(event);
     uint32_t key = libinput_event_keyboard_get_key(kbevent);
-    MP_DBG(src, "kbd event, key: %d ", key);
-    int key_state = 0;
-    switch (libinput_event_keyboard_get_key_state(kbevent)) {
-        case LIBINPUT_KEY_STATE_PRESSED:
-            MP_DBG(src, "down\n");
-            key_state = MP_KEY_STATE_DOWN;
-            break;
-        case LIBINPUT_KEY_STATE_RELEASED:
-            MP_DBG(src, "up\n");
-            key_state = MP_KEY_STATE_UP;
-            break;
-    }
+    int key_state = libinput_event_keyboard_get_key_state(kbevent) == LIBINPUT_KEY_STATE_PRESSED ? MP_KEY_STATE_DOWN : MP_KEY_STATE_UP;
 
     xkb_keysym_t sym = xkb_state_key_get_one_sym(p->kbd_state, key+8);
     int mpkey = lookupkey(sym);
