@@ -65,8 +65,7 @@ static int drm_connector_opt_help(struct mp_log *log, const struct m_option *opt
 static int drm_mode_opt_help(struct mp_log *log, const struct m_option *opt,
                              struct bstr name);
 
-static int drm_validate_mode_opt(struct mp_log *log, const struct m_option *opt,
-                                 struct bstr name, const char **value);
+static OPT_STRING_VALIDATE_FUNC(drm_validate_mode_opt);
 
 static void drm_show_available_modes(struct mp_log *log, const drmModeConnector *connector);
 
@@ -96,7 +95,8 @@ const struct m_sub_options drm_conf = {
             {"xrgb8888",    DRM_OPTS_FORMAT_XRGB8888},
             {"xrgb2101010", DRM_OPTS_FORMAT_XRGB2101010},
             {"xbgr8888",    DRM_OPTS_FORMAT_XBGR8888},
-            {"xbgr2101010", DRM_OPTS_FORMAT_XBGR2101010})},
+            {"xbgr2101010", DRM_OPTS_FORMAT_XBGR2101010},
+            {"yuyv",        DRM_OPTS_FORMAT_YUYV})},
         {"drm-draw-surface-size", OPT_SIZE_BOX(draw_surface_size)},
         {"drm-vrr-enabled", OPT_CHOICE(vrr_enabled,
             {"no", 0}, {"yes", 1}, {"auto", -1})},
@@ -107,6 +107,7 @@ const struct m_sub_options drm_conf = {
         .drm_atomic = 1,
         .draw_plane = DRM_OPTS_PRIMARY_PLANE,
         .drmprime_video_plane = DRM_OPTS_OVERLAY_PLANE,
+        .drm_format = DRM_OPTS_FORMAT_XRGB8888,
     },
     .size = sizeof(struct drm_opts),
 };
@@ -387,7 +388,7 @@ bool vo_drm_acquire_crtc(struct vo_drm_state *drm)
     drm_object_set_property(request, atomic_ctx->draw_plane, "CRTC_H",  drm->mode.mode.vdisplay);
 
     if (drmModeAtomicCommit(drm->fd, request, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL)) {
-        MP_ERR(drm, "Failed to commit ModeSetting atomic request: %s\n", strerror(errno));
+        MP_ERR(drm, "Failed to commit ModeSetting atomic request: %s\n", mp_strerror(errno));
         goto err;
     }
 

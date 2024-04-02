@@ -17,6 +17,7 @@ test_utils_files = [
     'misc/dispatch.c',
     'misc/json.c',
     'misc/node.c',
+    'misc/path_utils.c',
     'misc/random.c',
     'misc/thread_tools.c',
     'options/m_config_core.c',
@@ -51,7 +52,7 @@ endif
 
 if features['win32-desktop']
     test_utils_deps += cc.find_library('imm32')
-    test_utils_deps += cc.find_library('winmm')
+    test_utils_deps += cc.find_library('ntdll')
 endif
 test_utils_objects = libmpv.extract_objects(test_utils_files)
 test_utils = static_library('test-utils', 'test_utils.c', include_directories: incdir,
@@ -74,7 +75,7 @@ endif
 
 img_utils_objects = libmpv.extract_objects(img_utils_files)
 img_utils = static_library('img-utils', 'img_utils.c', include_directories: incdir,
-                           dependencies: [libavcodec], objects: img_utils_objects)
+                           dependencies: [libavcodec, libplacebo], objects: img_utils_objects)
 
 # The actual tests.
 chmap_files = [
@@ -92,7 +93,7 @@ test('chmap', chmap)
 gl_video_objects = libmpv.extract_objects('video/out/gpu/ra.c',
                                           'video/out/gpu/utils.c')
 gl_video = executable('gl-video', 'gl_video.c', objects: gl_video_objects,
-                      dependencies: [libavutil], include_directories: incdir,
+                      dependencies: [libavutil, libplacebo], include_directories: incdir,
                       link_with: [img_utils, test_utils])
 test('gl-video', gl_video)
 
@@ -104,6 +105,9 @@ test('linked-list', linked_list)
 
 timer = executable('timer', files('timer.c'), include_directories: incdir, link_with: test_utils)
 test('timer', timer)
+
+format = executable('format', files('format.c'), include_directories: incdir, link_with: test_utils)
+test('format', format)
 
 paths_objects = libmpv.extract_objects('options/path.c', path_source)
 paths = executable('paths', 'paths.c', include_directories: incdir,

@@ -229,19 +229,7 @@ end
 
 -- Escape a string for verbatim display on the OSD
 function ass_escape(str)
-    -- There is no escape for '\' in ASS (I think?) but '\' is used verbatim if
-    -- it isn't followed by a recognised character, so add a zero-width
-    -- non-breaking space
-    str = str:gsub('\\', '\\\239\187\191')
-    str = str:gsub('{', '\\{')
-    str = str:gsub('}', '\\}')
-    -- Precede newlines with a ZWNBSP to prevent ASS's weird collapsing of
-    -- consecutive newlines
-    str = str:gsub('\n', '\239\187\191\\N')
-    -- Turn leading spaces into hard spaces to prevent ASS from stripping them
-    str = str:gsub('\\N ', '\\N\\h')
-    str = str:gsub('^ ', '\\h')
-    return str
+    return mp.command_native({'escape-ass', str})
 end
 
 -- Takes a list of strings, a max width in characters and
@@ -412,7 +400,7 @@ function update()
     -- thin as possible and make it appear to be 1px wide by giving it 0.5px
     -- horizontal borders.
     local cheight = opts.font_size * 8
-    local cglyph = '{\\r' ..
+    local cglyph = '{\\rDefault' ..
                    (mp.get_property_native('focused') == false
                     and '\\alpha&HFF&' or '\\1a&H44&\\3a&H44&\\4a&H99&') ..
                    '\\1c&Heeeeee&\\3c&Heeeeee&\\4c&H000000&' ..
@@ -938,7 +926,7 @@ function build_completers()
         { pattern = '^%s*change[-_]list%s+"?([%w_-]+)"?%s+"()%a*$', list = list_option_verb_list, append = '" ' },
         { pattern = '^%s*([av]f)%s+()%a*$', list = list_option_verb_list, append = ' ' },
         { pattern = '^%s*([av]f)%s+"()%a*$', list = list_option_verb_list, append = '" ' },
-        { pattern = '${=?()[%w_/-]*$', list = property_list, append = '}' },
+        { pattern = '${[=>]?()[%w_/-]*$', list = property_list, append = '}' },
     }
 
     for _, command in pairs({'set', 'add', 'cycle', 'cycle[-_]values', 'multiply'}) do

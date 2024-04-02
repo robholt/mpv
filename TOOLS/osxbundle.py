@@ -3,6 +3,7 @@ import os
 import shutil
 import sys
 import fileinput
+import dylib_unhell
 from optparse import OptionParser
 
 def sh(command):
@@ -39,7 +40,13 @@ def apply_plist_template(plist_file, version):
         print(line.rstrip().replace('${VERSION}', version))
 
 def sign_bundle(binary_name):
-    sh('codesign --force --deep -s - ' + bundle_path(binary_name))
+    sign_directories = ['Contents/Frameworks', 'Contents/MacOS']
+    for dir in sign_directories:
+        resolved_dir = os.path.join(bundle_path(binary_name), dir)
+        for root, _dirs, files in os.walk(resolved_dir):
+            for f in files:
+                sh('codesign --force -s - ' + os.path.join(root, f))
+    sh('codesign --force -s - ' + bundle_path(binary_name))
 
 def bundle_version(src_path):
     version = 'UNKNOWN'
@@ -77,7 +84,7 @@ def main():
 
     if options.deps:
         print("> bundling dependencies")
-        print(sh(" ".join([os.path.join(src_path, "TOOLS/dylib-unhell.py"), target_binary(binary_name)])))
+        dylib_unhell.process(target_binary(binary_name))
 
     print("> signing bundle with ad-hoc pseudo identity")
     sign_bundle(binary_name)

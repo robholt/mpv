@@ -23,7 +23,7 @@
 
 #include "common/common.h"
 #include "config.h"
-// We make use of NON-POSIX pthreads functions and certain systems 
+// We make use of NON-POSIX pthreads functions and certain systems
 // require this header to build without issues. (ex: OpenBSD)
 #if HAVE_BSD_THREAD_NAME
 #include <pthread_np.h>
@@ -102,7 +102,7 @@ typedef pthread_once_t  mp_once;
 typedef pthread_t       mp_thread_id;
 typedef pthread_t       mp_thread;
 
-#define MP_STATIC_COND_INITIALIZER (mp_cond){ .cond = PTHREAD_COND_INITIALIZER, .clk_id = CLOCK_REALTIME }
+#define MP_STATIC_COND_INITIALIZER { .cond = PTHREAD_COND_INITIALIZER, .clk_id = CLOCK_REALTIME }
 #define MP_STATIC_MUTEX_INITIALIZER PTHREAD_MUTEX_INITIALIZER
 #define MP_STATIC_ONCE_INITIALIZER PTHREAD_ONCE_INIT
 
@@ -235,7 +235,7 @@ static inline void mp_thread_set_name(const char *name)
     }
 #elif HAVE_BSD_THREAD_NAME
     pthread_set_name_np(pthread_self(), name);
-#elif HAVE_OSX_THREAD_NAME
+#elif HAVE_MAC_THREAD_NAME
     pthread_setname_np(name);
 #endif
 }

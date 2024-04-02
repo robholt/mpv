@@ -120,6 +120,7 @@ struct track {
     char *title;
     bool default_track, forced_track, dependent_track;
     bool visual_impaired_track, hearing_impaired_track;
+    bool forced_select; // if the track was selected because it is forced
     bool image;
     bool attached_picture;
     char *lang;
@@ -190,6 +191,8 @@ struct ao_chain {
 
     double start_pts;
     bool start_pts_known;
+
+    bool audio_started;
 
     struct track *track;
     struct mp_pin *filter_src;

@@ -183,6 +183,7 @@ struct gl_video {
 
     struct mp_image_params real_image_params;   // configured format
     struct mp_image_params image_params;        // texture format (mind hwdec case)
+    struct mp_image_params target_params;       // target format
     struct ra_imgfmt_desc ra_format;            // texture format
     int plane_count;
 
@@ -212,6 +213,7 @@ struct gl_video {
     struct ra_tex *merge_tex[4];
     struct ra_tex *scale_tex[4];
     struct ra_tex *integer_tex[4];
+    struct ra_tex *chroma_tex[4];
     struct ra_tex *indirect_tex;
     struct ra_tex *blend_subs_tex;
     struct ra_tex *error_diffusion_tex[2];
@@ -312,8 +314,8 @@ static const struct gl_video_opts gl_video_opts_def = {
     .linear_downscaling = true,
     .sigmoid_upscaling = true,
     .interpolation_threshold = 0.01,
-    .alpha_mode = ALPHA_BLEND_TILES,
-    .background = {0, 0, 0, 255},
+    .background = BACKGROUND_TILES,
+    .background_color = {0, 0, 0, 255},
     .gamma = 1.0f,
     .tone_map = {
         .curve = TONE_MAPPING_AUTO,
@@ -329,14 +331,9 @@ static const struct gl_video_opts gl_video_opts_def = {
     .hwdec_interop = "auto",
 };
 
-static int validate_scaler_opt(struct mp_log *log, const m_option_t *opt,
-                               struct bstr name, const char **value);
-
-static int validate_window_opt(struct mp_log *log, const m_option_t *opt,
-                               struct bstr name, const char **value);
-
-static int validate_error_diffusion_opt(struct mp_log *log, const m_option_t *opt,
-                                        struct bstr name, const char **value);
+static OPT_STRING_VALIDATE_FUNC(validate_scaler_opt);
+static OPT_STRING_VALIDATE_FUNC(validate_window_opt);
+static OPT_STRING_VALIDATE_FUNC(validate_error_diffusion_opt);
 
 #define OPT_BASE_STRUCT struct gl_video_opts
 
@@ -447,13 +444,12 @@ const struct m_sub_options gl_video_conf = {
             M_RANGE(1, 128)},
         {"error-diffusion",
             OPT_STRING_VALIDATE(error_diffusion, validate_error_diffusion_opt)},
-        {"alpha", OPT_CHOICE(alpha_mode,
-            {"no", ALPHA_NO},
-            {"yes", ALPHA_YES},
-            {"blend", ALPHA_BLEND},
-            {"blend-tiles", ALPHA_BLEND_TILES})},
+        {"background", OPT_CHOICE(background,
+            {"none", BACKGROUND_NONE},
+            {"color", BACKGROUND_COLOR},
+            {"tiles", BACKGROUND_TILES})},
         {"opengl-rectangle-textures", OPT_BOOL(use_rectangle)},
-        {"background", OPT_COLOR(background)},
+        {"background-color", OPT_COLOR(background_color)},
         {"interpolation", OPT_BOOL(interpolation)},
         {"interpolation-threshold", OPT_FLOAT(interpolation_threshold)},
         {"blend-subtitles", OPT_CHOICE(blend_subs,
@@ -579,6 +575,7 @@ static void uninit_rendering(struct gl_video *p)
         ra_tex_free(p->ra, &p->merge_tex[n]);
         ra_tex_free(p->ra, &p->scale_tex[n]);
         ra_tex_free(p->ra, &p->integer_tex[n]);
+        ra_tex_free(p->ra, &p->chroma_tex[n]);
     }
 
     ra_tex_free(p->ra, &p->indirect_tex);
@@ -2205,6 +2202,23 @@ static void pass_read_video(struct gl_video *p)
         }
     }
 
+    // If chroma textures are in a subsampled semi-planar format and rotated,
+    // introduce an explicit conversion pass to avoid breaking chroma scalers.
+    for (int n = 0; n < 4; n++) {
+        if (img[n].tex && img[n].type == PLANE_CHROMA &&
+            img[n].tex->params.format->num_components == 2 &&
+            p->image_params.rotate % 180 == 90 &&
+            p->ra_format.chroma_w != 1)
+        {
+            GLSLF("// chroma fix for rotated plane %d\n", n);
+            copy_image(p, &(int){0}, img[n]);
+            pass_describe(p, "chroma fix for rotated plane");
+            finish_pass_tex(p, &p->chroma_tex[n], img[n].w, img[n].h);
+            img[n] = image_wrap(p->chroma_tex[n], img[n].type,
+                                img[n].components);
+        }
+    }
+
     // At this point all planes are finalized but they may not be at the
     // required size yet. Furthermore, they may have texture offsets that
     // require realignment.
@@ -2396,7 +2410,7 @@ static void pass_convert_yuv(struct gl_video *p)
     }
 
     p->components = 3;
-    if (!p->has_alpha || p->opts.alpha_mode == ALPHA_NO) {
+    if (!p->has_alpha) {
         GLSL(color.a = 1.0;)
     } else if (p->image_params.repr.alpha == PL_ALPHA_PREMULTIPLIED) {
         p->components = 4;
@@ -2713,6 +2727,21 @@ static void pass_colormanage(struct gl_video *p, struct pl_color_space src,
     // Adapt from src to dst as necessary
     pass_color_map(p->sc, p->use_linear && !osd, src, dst, src_light, dst_light, &tone_map);
 
+    if (!osd) {
+        struct mp_csp_params cparams = MP_CSP_PARAMS_DEFAULTS;
+        mp_csp_equalizer_state_get(p->video_eq, &cparams);
+        if (cparams.levels_out == PL_COLOR_LEVELS_UNKNOWN)
+            cparams.levels_out = PL_COLOR_LEVELS_FULL;
+        p->target_params = (struct mp_image_params){
+            .imgfmt_name = p->fbo_format ? p->fbo_format->name : "unknown",
+            .w = p->texture_w,
+            .h = p->texture_h,
+            .color = dst,
+            .repr = {.sys = PL_COLOR_SYSTEM_RGB, .levels = cparams.levels_out},
+            .rotate = p->image_params.rotate,
+        };
+    }
+
     if (p->use_lut_3d && (flags & RENDER_SCREEN_COLOR)) {
         gl_sc_uniform_texture(p->sc, "lut_3d", p->lut_3d_texture);
         GLSL(vec3 cpos;)
@@ -2727,7 +2756,7 @@ void gl_video_set_fb_depth(struct gl_video *p, int fb_depth)
     p->fb_depth = fb_depth;
 }
 
-static void pass_dither(struct gl_video *p)
+static void pass_dither(struct gl_video *p, const struct ra_fbo *fbo)
 {
     // Assume 8 bits per component if unknown.
     int dst_depth = p->fb_depth > 0 ? p->fb_depth : 8;
@@ -2860,7 +2889,9 @@ static void pass_dither(struct gl_video *p)
 
     gl_sc_uniform_texture(p->sc, "dither", p->dither_texture);
 
-    GLSLF("vec2 dither_pos = gl_FragCoord.xy * 1.0/%d.0;\n", dither_size);
+    GLSLF("vec2 dither_coord = vec2(gl_FragCoord.x, %d.0 + %f * gl_FragCoord.y);",
+          fbo->flip ? fbo->tex->params.h : 0, fbo->flip ? -1.0 : 1.0);
+    GLSLF("vec2 dither_pos = dither_coord * 1.0/%d.0;\n", dither_size);
 
     if (p->opts.temporal_dither) {
         int phase = (p->frames_rendered / p->opts.temporal_dither_period) % 8u;
@@ -3074,28 +3105,30 @@ static void pass_draw_to_screen(struct gl_video *p, const struct ra_fbo *fbo, in
         copy_image(p, &(int){0}, tmp);
     }
 
-    if (p->has_alpha){
-        if (p->opts.alpha_mode == ALPHA_BLEND_TILES) {
+    if (p->has_alpha) {
+        if (p->opts.background == BACKGROUND_TILES) {
             // Draw checkerboard pattern to indicate transparency
             GLSLF("// transparency checkerboard\n");
-            GLSL(bvec2 tile = lessThan(fract(gl_FragCoord.xy * 1.0/32.0), vec2(0.5));)
+            GLSLF("vec2 tile_coord = vec2(gl_FragCoord.x, %d.0 + %f * gl_FragCoord.y);",
+                  fbo->flip ? fbo->tex->params.h : 0, fbo->flip ? -1.0 : 1.0);
+            GLSL(bvec2 tile = lessThan(fract(tile_coord * 1.0 / 32.0), vec2(0.5));)
             GLSL(vec3 background = vec3(tile.x == tile.y ? 0.93 : 0.87);)
             GLSL(color.rgb += background.rgb * (1.0 - color.a);)
             GLSL(color.a = 1.0;)
-        } else if (p->opts.alpha_mode == ALPHA_BLEND) {
+        } else if (p->opts.background == BACKGROUND_COLOR) {
             // Blend into background color (usually black)
-            struct m_color c = p->opts.background;
+            struct m_color c = p->opts.background_color;
             GLSLF("vec4 background = vec4(%f, %f, %f, %f);\n",
                   c.r / 255.0, c.g / 255.0, c.b / 255.0, c.a / 255.0);
-            GLSL(color.rgb += background.rgb * (1.0 - color.a);)
-            GLSL(color.a = background.a;)
+            GLSL(color += background * (1.0 - color.a);)
+            GLSL(color.rgb *= vec3(color.a););
         }
     }
 
     pass_opt_hook_point(p, "OUTPUT", NULL);
 
     if (flags & RENDER_SCREEN_COLOR)
-        pass_dither(p);
+        pass_dither(p, fbo);
     pass_describe(p, "output to screen");
     finish_pass_fbo(p, fbo, false, &p->dst_rect);
 }
@@ -3195,7 +3228,7 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
 
         struct mp_image *f = t->frames[i];
         uint64_t f_id = t->frame_id + i;
-        if (!mp_image_params_equal(&f->params, &p->real_image_params))
+        if (!mp_image_params_static_equal(&f->params, &p->real_image_params))
             continue;
 
         if (f_id > p->surfaces[p->surface_idx].id) {
@@ -3312,6 +3345,9 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
 
     struct m_color c = p->clear_color;
     float clear_color[4] = {c.r / 255.0, c.g / 255.0, c.b / 255.0, c.a / 255.0};
+    clear_color[0] *= clear_color[3];
+    clear_color[1] *= clear_color[3];
+    clear_color[2] *= clear_color[3];
     p->ra->fns->clear(p->ra, fbo->tex, clear_color, &target_rc);
 
     if (p->hwdec_overlay) {
@@ -3800,9 +3836,8 @@ static void check_gl_features(struct gl_video *p)
         p->opts.dither_algo = DITHER_NONE;
         MP_WARN(p, "Disabling dithering (no gl_FragCoord).\n");
     }
-    if (!have_fragcoord && p->opts.alpha_mode == ALPHA_BLEND_TILES) {
-        p->opts.alpha_mode = ALPHA_BLEND;
-        // Verbose, since this is the default setting
+    if (!have_fragcoord && p->opts.background == BACKGROUND_TILES) {
+        p->opts.background = BACKGROUND_COLOR;
         MP_VERBOSE(p, "Disabling alpha checkerboard (no gl_FragCoord).\n");
     }
     if (!have_fbo && have_compute) {
@@ -3858,9 +3893,9 @@ static void check_gl_features(struct gl_video *p)
             .gamma_auto = p->opts.gamma_auto,
             .pbo = p->opts.pbo,
             .fbo_format = p->opts.fbo_format,
-            .alpha_mode = p->opts.alpha_mode,
-            .use_rectangle = p->opts.use_rectangle,
             .background = p->opts.background,
+            .use_rectangle = p->opts.use_rectangle,
+            .background_color = p->opts.background_color,
             .dither_algo = p->opts.dither_algo,
             .dither_depth = p->opts.dither_depth,
             .dither_size = p->opts.dither_size,
@@ -4016,7 +4051,7 @@ void gl_video_config(struct gl_video *p, struct mp_image_params *params)
     unmap_overlay(p);
     unref_current_image(p);
 
-    if (!mp_image_params_equal(&p->real_image_params, params)) {
+    if (!mp_image_params_static_equal(&p->real_image_params, params)) {
         uninit_video(p);
         p->real_image_params = *params;
         p->image_params = *params;
@@ -4111,7 +4146,7 @@ static void reinit_from_options(struct gl_video *p)
     p->opts = *(struct gl_video_opts *)p->opts_cache->opts;
 
     if (!p->force_clear_color)
-        p->clear_color = p->opts.background;
+        p->clear_color = p->opts.background_color;
 
     check_gl_features(p);
     uninit_rendering(p);
@@ -4355,4 +4390,9 @@ void gl_video_load_hwdecs_for_img_fmt(struct gl_video *p, struct mp_hwdec_device
 {
     assert(p->hwdec_ctx.ra_ctx);
     ra_hwdec_ctx_load_fmt(&p->hwdec_ctx, devs, params);
+}
+
+struct mp_image_params *gl_video_get_target_params_ptr(struct gl_video *p)
+{
+    return &p->target_params;
 }

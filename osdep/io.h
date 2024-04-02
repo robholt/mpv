@@ -106,6 +106,8 @@ char *mp_to_utf8(void *talloc_ctx, const wchar_t *s);
 #include <sys/stat.h>
 #include <fcntl.h>
 
+int mp_puts(const char *str);
+int mp_fputs(const char *str, FILE *stream);
 int mp_printf(const char *format, ...) PRINTF_ATTRIBUTE(1, 2);
 int mp_fprintf(FILE *stream, const char *format, ...) PRINTF_ATTRIBUTE(2, 3);
 int mp_open(const char *filename, int oflag, ...);
@@ -116,6 +118,7 @@ DIR *mp_opendir(const char *path);
 struct dirent *mp_readdir(DIR *dir);
 int mp_closedir(DIR *dir);
 int mp_mkdir(const char *path, int mode);
+int mp_unlink(const char *path);
 char *mp_win32_getcwd(char *buf, size_t size);
 char *mp_getenv(const char *name);
 
@@ -173,6 +176,8 @@ int mp_glob(const char *restrict pattern, int flags,
             int (*errfunc)(const char*, int), mp_glob_t *restrict pglob);
 void mp_globfree(mp_glob_t *pglob);
 
+#define puts(...) mp_puts(__VA_ARGS__)
+#define fputs(...) mp_fputs(__VA_ARGS__)
 #define printf(...) mp_printf(__VA_ARGS__)
 #define fprintf(...) mp_fprintf(__VA_ARGS__)
 #define open(...) mp_open(__VA_ARGS__)
@@ -183,6 +188,7 @@ void mp_globfree(mp_glob_t *pglob);
 #define readdir(...) mp_readdir(__VA_ARGS__)
 #define closedir(...) mp_closedir(__VA_ARGS__)
 #define mkdir(...) mp_mkdir(__VA_ARGS__)
+#define unlink(...) mp_unlink(__VA_ARGS__)
 #define getcwd(...) mp_win32_getcwd(__VA_ARGS__)
 #define getenv(...) mp_getenv(__VA_ARGS__)
 
@@ -238,8 +244,5 @@ void freelocale(locale_t);
 extern char **environ;
 
 #endif /* __MINGW32__ */
-
-int mp_mkostemps(char *template, int suffixlen, int flags);
-bool mp_save_to_file(const char *filepath, const void *data, size_t size);
 
 #endif

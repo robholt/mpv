@@ -114,6 +114,7 @@ struct vo_x11_state {
      * stays the same (even if that size is different from the current
      * window size after the user modified the latter). */
     int old_dw, old_dh;
+    int old_x, old_y;
     /* Video size changed during fullscreen when we couldn't tell the new
      * size to the window manager. Must set window size when turning
      * fullscreen off. */
@@ -137,10 +138,9 @@ struct vo_x11_state {
     Atom dnd_requested_action;
     Window dnd_src_window;
 
-    /* dragging the window */
-    bool win_drag_button1_down;
-
     Atom icc_profile_property;
+
+    XEvent last_button_event;
 };
 
 bool vo_x11_init(struct vo *vo);

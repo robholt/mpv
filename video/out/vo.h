@@ -122,6 +122,9 @@ enum mp_voctrl {
 
     /* private to vo_gpu and vo_gpu_next */
     VOCTRL_EXTERNAL_RESIZE,
+
+    // Begin VO dragging.
+    VOCTRL_BEGIN_DRAGGING,
 };
 
 // Helper to expose what kind of content is currently playing to the VO.
@@ -477,7 +480,10 @@ struct vo {
     //     which are still safe to read in the play loop, but for correctness
     //     generic getter is protected by params_mutex.
     mp_mutex params_mutex;
-    struct mp_image_params *params; // Configured parameters (changed in vo_reconfig)
+    // Configured parameters (changed in vo_reconfig)
+    struct mp_image_params *params;
+    // Target display parameters (VO is responsible for re-/setting)
+    struct mp_image_params *target_params;
 
     // --- The following fields can be accessed only by the VO thread, or from
     //     anywhere _if_ the VO thread is suspended (use vo->dispatch).
@@ -551,5 +557,6 @@ void vo_get_src_dst_rects(struct vo *vo, struct mp_rect *out_src,
 struct vo_frame *vo_frame_ref(struct vo_frame *frame);
 
 struct mp_image_params vo_get_current_params(struct vo *vo);
+struct mp_image_params vo_get_target_params(struct vo *vo);
 
 #endif /* MPLAYER_VIDEO_OUT_H */

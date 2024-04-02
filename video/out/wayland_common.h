@@ -22,6 +22,8 @@
 #include "input/event.h"
 #include "vo.h"
 
+struct vo_wayland_seat;
+
 typedef struct {
     uint32_t format;
     uint32_t padding;
@@ -64,17 +66,16 @@ struct vo_wayland_state {
     int bounded_width;
     int reduced_height;
     int reduced_width;
-    int toplevel_width;
-    int toplevel_height;
 
     /* State */
     bool activated;
-    bool configured;
     bool focused;
     bool frame_wait;
+    bool geometry_configured;
     bool hidden;
     bool initial_size_hint;
     bool locked_size;
+    bool scale_configured;
     bool state_change;
     bool tiled;
     bool toplevel_configured;
@@ -135,6 +136,7 @@ struct vo_wayland_state {
     /* viewporter */
     struct wp_viewporter *viewporter;
     struct wp_viewport   *viewport;
+    struct wp_viewport   *cursor_viewport;
     struct wp_viewport   *osd_viewport;
     struct wp_viewport   *video_viewport;
 
@@ -145,7 +147,7 @@ struct vo_wayland_state {
     /* DND */
     struct wl_data_device_manager *dnd_devman;
     struct wl_data_offer *dnd_offer;
-    enum mp_dnd_action dnd_action;
+    int dnd_action; // actually enum mp_dnd_action
     char *dnd_mime_type;
     int dnd_fd;
     int dnd_mime_score;
@@ -156,6 +158,7 @@ struct vo_wayland_state {
     struct wl_surface      *cursor_surface;
     bool                    cursor_visible;
     int                     allocated_cursor_scale;
+    struct vo_wayland_seat *last_button_seat;
 };
 
 bool vo_wayland_check_visible(struct vo *vo);

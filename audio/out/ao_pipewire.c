@@ -27,6 +27,7 @@
 #include <spa/utils/result.h>
 #include <math.h>
 
+#include "common/common.h"
 #include "common/msg.h"
 #include "options/m_config.h"
 #include "options/m_option.h"
@@ -166,14 +167,13 @@ static void on_process(void *userdata)
     void *data[MP_NUM_CHANNELS];
 
     if ((b = pw_stream_dequeue_buffer(p->stream)) == NULL) {
-        MP_WARN(ao, "out of buffers: %s\n", strerror(errno));
+        MP_WARN(ao, "out of buffers: %s\n", mp_strerror(errno));
         return;
     }
 
     struct spa_buffer *buf = b->buffer;
 
-    int bytes_per_channel = buf->datas[0].maxsize / ao->channels.num;
-    int nframes = bytes_per_channel / ao->sstride;
+    int nframes = buf->datas[0].maxsize / ao->sstride;
 #if PW_CHECK_VERSION(0, 3, 49)
     if (b->requested != 0)
         nframes = MPMIN(b->requested, nframes);
@@ -226,7 +226,7 @@ static void on_param_changed(void *userdata, uint32_t id, const struct spa_pod *
     if (param == NULL || id != SPA_PARAM_Format)
         return;
 
-    int buffer_size = ao->device_buffer * af_fmt_to_bytes(ao->format) * ao->channels.num;
+    int buffer_size = ao->device_buffer * ao->sstride;
 
     params[0] = spa_pod_builder_add_object(&b,
                     SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
@@ -518,7 +518,7 @@ static int pipewire_init_boilerplate(struct ao *ao)
     if (!p->core) {
         MP_MSG(ao, ao->probing ? MSGL_V : MSGL_ERR,
                "Could not connect to context '%s': %s\n",
-               p->options.remote, strerror(errno));
+               p->options.remote, mp_strerror(errno));
         pw_context_destroy(context);
         goto error;
     }

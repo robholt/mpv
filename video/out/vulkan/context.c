@@ -37,8 +37,7 @@ struct vulkan_opts {
     bool async_compute;
 };
 
-static int vk_validate_dev(struct mp_log *log, const struct m_option *opt,
-                           struct bstr name, const char **value)
+static inline OPT_STRING_VALIDATE_FUNC(vk_validate_dev)
 {
     struct bstr param = bstr0(*value);
     int ret = M_OPT_INVALID;
@@ -207,8 +206,7 @@ bool ra_vk_ctx_init(struct ra_ctx *ctx, struct mpvk_ctx *vk,
         VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME,
         VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME,
         VK_KHR_VIDEO_QUEUE_EXTENSION_NAME,
-        // This is a literal string as it's not in the official headers yet.
-        "VK_MESA_video_decode_av1",
+        "VK_KHR_video_decode_av1", /* VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME */
     };
 
     VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer_feature = {
@@ -310,11 +308,6 @@ char *ra_vk_ctx_get_device_name(struct ra_ctx *ctx)
     return device_name;
 }
 
-static int color_depth(struct ra_swapchain *sw)
-{
-    return 0; // TODO: implement this somehow?
-}
-
 static bool start_frame(struct ra_swapchain *sw, struct ra_fbo *out_fbo)
 {
     struct priv *p = sw->priv;
@@ -364,7 +357,6 @@ static void get_vsync(struct ra_swapchain *sw,
 }
 
 static const struct ra_swapchain_fns vulkan_swapchain = {
-    .color_depth   = color_depth,
     .start_frame   = start_frame,
     .submit_frame  = submit_frame,
     .swap_buffers  = swap_buffers,

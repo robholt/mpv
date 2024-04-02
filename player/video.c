@@ -120,6 +120,7 @@ void reset_video_state(struct MPContext *mpctx)
     mpctx->drop_message_shown = 0;
     mpctx->display_sync_drift_dir = 0;
     mpctx->display_sync_error = 0;
+    mpctx->display_sync_active = 0;
 
     mpctx->video_status = mpctx->vo_chain ? STATUS_SYNCING : STATUS_EOF;
 }
@@ -346,7 +347,6 @@ static void adjust_sync(struct MPContext *mpctx, double v_pts, double frame_time
     if (mpctx->audio_status != STATUS_PLAYING)
         return;
 
-    mpctx->delay -= frame_time;
     double a_pts = written_audio_pts(mpctx) + opts->audio_delay - mpctx->delay;
     double av_delay = a_pts - v_pts;
 
@@ -388,6 +388,8 @@ static void handle_new_frame(struct MPContext *mpctx)
         }
     }
     mpctx->time_frame += frame_time / mpctx->video_speed;
+    if (mpctx->ao_chain && mpctx->ao_chain->audio_started)
+        mpctx->delay -= frame_time;
     if (mpctx->video_status >= STATUS_PLAYING)
         adjust_sync(mpctx, pts, frame_time);
     MP_TRACE(mpctx, "frametime=%5.3f\n", frame_time);
@@ -644,8 +646,9 @@ static void update_av_diff(struct MPContext *mpctx, double offset)
     if (mpctx->vo_chain && mpctx->vo_chain->is_sparse)
         return;
 
-    double a_pos = playing_audio_pts(mpctx);
+    double a_pos = written_audio_pts(mpctx);
     if (a_pos != MP_NOPTS_VALUE && mpctx->video_pts != MP_NOPTS_VALUE) {
+        a_pos -= mpctx->audio_speed * ao_get_delay(mpctx->ao);
         mpctx->last_av_difference = a_pos - mpctx->video_pts
                                   + opts->audio_delay + offset;
     }
@@ -1041,14 +1044,6 @@ static void apply_video_crop(struct MPContext *mpctx, struct vo *vo)
     }
 }
 
-static bool video_reconfig_needed(struct mp_image_params a,
-                                  struct mp_image_params b)
-{
-    a.color.hdr = (struct pl_hdr_metadata){0};
-    b.color.hdr = (struct pl_hdr_metadata){0};
-    return !mp_image_params_equal(&a, &b);
-}
-
 void write_video(struct MPContext *mpctx)
 {
     struct MPOpts *opts = mpctx->opts;
@@ -1171,7 +1166,7 @@ void write_video(struct MPContext *mpctx)
 
     // Filter output is different from VO input?
     struct mp_image_params *p = &mpctx->next_frames[0]->params;
-    if (!vo->params || video_reconfig_needed(*p, *vo->params)) {
+    if (!vo->params || !mp_image_params_static_equal(p, vo->params)) {
         // Changing config deletes the current frame; wait until it's finished.
         if (vo_still_displaying(vo)) {
             vo_request_wakeup_on_done(vo);

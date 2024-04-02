@@ -71,7 +71,7 @@ static const char def_config[] =
 ;
 
 #if HAVE_COCOA
-#include "osdep/macosx_events.h"
+#include "osdep/mac/app_bridge.h"
 #endif
 
 #ifndef FULLCONFIG
@@ -184,16 +184,17 @@ void mp_destroy(struct MPContext *mpctx)
     cocoa_set_input_context(NULL);
 #endif
 
-    if (cas_terminal_owner(mpctx, mpctx)) {
-        terminal_uninit();
-        cas_terminal_owner(mpctx, NULL);
-    }
-
     mp_input_uninit(mpctx->input);
 
     uninit_libav(mpctx->global);
 
     mp_msg_uninit(mpctx->global);
+
+    if (cas_terminal_owner(mpctx, mpctx)) {
+        terminal_uninit();
+        cas_terminal_owner(mpctx, NULL);
+    }
+
     assert(!mpctx->num_abort_list);
     talloc_free(mpctx->abort_list);
     mp_mutex_destroy(&mpctx->abort_lock);
@@ -389,7 +390,7 @@ int mp_initialize(struct MPContext *mpctx, char **options)
     MP_STATS(mpctx, "start init");
 
 #if HAVE_COCOA
-    mpv_handle *ctx = mp_new_client(mpctx->clients, "osx");
+    mpv_handle *ctx = mp_new_client(mpctx->clients, "mac");
     cocoa_set_mpv_handle(ctx);
 #endif
 
@@ -419,7 +420,6 @@ int mp_initialize(struct MPContext *mpctx, char **options)
 
 int mpv_main(int argc, char *argv[])
 {
-    mp_thread_set_name("mpv");
     struct MPContext *mpctx = mp_create();
     if (!mpctx)
         return 1;

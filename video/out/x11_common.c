@@ -622,9 +622,7 @@ static void vo_x11_get_x11_screen_dpi_scale(struct vo_x11_state *x11)
         int s_y = lrint(MPCLAMP(2 * dpi_y / base_dpi, 0, 20));
         if (s_x == s_y && s_x > 2 && s_x < 20) {
             x11->dpi_scale = s_x / 2.0;
-            MP_VERBOSE(x11, "Using X11 screen DPI scale %g for prescaling. This can "
-                       "be disabled with --hidpi-window-scale=no.\n",
-                       x11->dpi_scale);
+            MP_VERBOSE(x11, "Using X11 screen DPI scale: %g", x11->dpi_scale);
         }
     }
 }
@@ -656,15 +654,20 @@ static bool vo_x11_get_xft_dpi_scale(struct vo_x11_state *x11)
             int s = lrint(MPCLAMP(2 * value / base_dpi, 0, 20));
             if (s > 2 && s < 20) {
                 x11->dpi_scale = s / 2.0;
-                MP_VERBOSE(x11, "Using Xft.dpi scale %g for prescaling. This can "
-                           "be disabled with --hidpi-window-scale=no.\n",
-                           x11->dpi_scale);
+                MP_VERBOSE(x11, "Using Xft.dpi scale: %g", x11->dpi_scale);
                 success = true;
             }
         }
     }
     XrmDestroyDatabase(db);
     return success;
+}
+
+static void vo_x11_get_dpi_scale(struct vo_x11_state *x11)
+{
+    if (!vo_x11_get_xft_dpi_scale(x11))
+        vo_x11_get_x11_screen_dpi_scale(x11);
+    x11->pending_vo_events |= VO_EVENT_DPI;
 }
 
 bool vo_x11_init(struct vo *vo)
@@ -731,10 +734,7 @@ bool vo_x11_init(struct vo *vo)
            x11->ws_width, x11->ws_height, dispName,
            x11->display_is_local ? "local" : "remote");
 
-    if (x11->opts->hidpi_window_scale) {
-        if (!vo_x11_get_xft_dpi_scale(x11))
-            vo_x11_get_x11_screen_dpi_scale(x11);
-    }
+    vo_x11_get_dpi_scale(x11);
 
     x11->wm_type = vo_wm_detect(vo);
 
@@ -1161,11 +1161,6 @@ static void vo_x11_check_net_wm_state_change(struct vo *vo)
             XFree(elems);
         }
 
-        if (opts->window_maximized && !is_maximized && x11->geometry_change) {
-            x11->geometry_change = false;
-            vo_x11_config_vo_window(vo);
-        }
-
         opts->window_minimized = is_minimized;
         x11->hidden = is_minimized;
         m_config_cache_write_opt(x11->opts_cache, &opts->window_minimized);
@@ -1219,7 +1214,28 @@ static void release_all_keys(struct vo *vo)
 
     if (x11->no_autorepeat)
         mp_input_put_key(x11->input_ctx, MP_INPUT_RELEASE_ALL);
-    x11->win_drag_button1_down = false;
+}
+
+static void vo_x11_begin_dragging(struct vo *vo)
+{
+    struct vo_x11_state *x11 = vo->x11;
+    XEvent Event = x11->last_button_event;
+    if (Event.type == ButtonPress && !x11->fs &&
+        !mp_input_test_dragging(x11->input_ctx, Event.xmotion.x,
+                                                Event.xmotion.y))
+    {
+        mp_input_put_key(x11->input_ctx, MP_INPUT_RELEASE_ALL);
+        XUngrabPointer(x11->display, CurrentTime);
+
+        long params[5] = {
+            Event.xmotion.x_root, Event.xmotion.y_root,
+            8, // _NET_WM_MOVERESIZE_MOVE
+            Event.xbutton.button,
+            1, // source indication: normal
+        };
+        x11_send_ewmh_msg(x11, "_NET_WM_MOVERESIZE", params);
+        x11->last_button_event = (XEvent){0};
+    }
 }
 
 void vo_x11_check_events(struct vo *vo)
@@ -1290,30 +1306,12 @@ void vo_x11_check_events(struct vo *vo)
             release_all_keys(vo);
             break;
         case MotionNotify:
-            if (x11->win_drag_button1_down && !x11->fs &&
-                !mp_input_test_dragging(x11->input_ctx, Event.xmotion.x,
-                                                        Event.xmotion.y))
-            {
-                mp_input_put_key(x11->input_ctx, MP_INPUT_RELEASE_ALL);
-                XUngrabPointer(x11->display, CurrentTime);
-
-                long params[5] = {
-                    Event.xmotion.x_root, Event.xmotion.y_root,
-                    8, // _NET_WM_MOVERESIZE_MOVE
-                    1, // button 1
-                    1, // source indication: normal
-                };
-                x11_send_ewmh_msg(x11, "_NET_WM_MOVERESIZE", params);
-            } else {
-                mp_input_set_mouse_pos(x11->input_ctx, Event.xmotion.x,
-                                                       Event.xmotion.y);
-            }
-            x11->win_drag_button1_down = false;
+            mp_input_set_mouse_pos(x11->input_ctx, Event.xmotion.x,
+                                                   Event.xmotion.y);
             break;
         case LeaveNotify:
             if (Event.xcrossing.mode != NotifyNormal)
                 break;
-            x11->win_drag_button1_down = false;
             mp_input_put_key(x11->input_ctx, MP_KEY_MOUSE_LEAVE);
             break;
         case EnterNotify:
@@ -1324,22 +1322,20 @@ void vo_x11_check_events(struct vo *vo)
         case ButtonPress:
             if (Event.xbutton.button - 1 >= MP_KEY_MOUSE_BTN_COUNT)
                 break;
-            if (Event.xbutton.button == 1)
-                x11->win_drag_button1_down = true;
             mp_input_put_key(x11->input_ctx,
                              (MP_MBTN_BASE + Event.xbutton.button - 1) |
                              get_mods(Event.xbutton.state) | MP_KEY_STATE_DOWN);
             long msg[4] = {XEMBED_REQUEST_FOCUS};
             vo_x11_xembed_send_message(x11, msg);
+            x11->last_button_event = Event;
             break;
         case ButtonRelease:
             if (Event.xbutton.button - 1 >= MP_KEY_MOUSE_BTN_COUNT)
                 break;
-            if (Event.xbutton.button == 1)
-                x11->win_drag_button1_down = false;
             mp_input_put_key(x11->input_ctx,
                              (MP_MBTN_BASE + Event.xbutton.button - 1) |
                              get_mods(Event.xbutton.state) | MP_KEY_STATE_UP);
+            x11->last_button_event = Event;
             break;
         case MapNotify:
             x11->window_hidden = false;
@@ -1401,6 +1397,7 @@ void vo_x11_check_events(struct vo *vo)
             }
             if (Event.type == x11->xrandr_event) {
                 xrandr_read(x11);
+                vo_x11_get_dpi_scale(x11);
                 vo_x11_update_geometry(vo);
             }
             break;
@@ -1724,12 +1721,12 @@ static void vo_x11_map_window(struct vo *vo, struct mp_rect rc)
     vo_x11_xembed_update(x11, XEMBED_MAPPED);
 }
 
-static void vo_x11_highlevel_resize(struct vo *vo, struct mp_rect rc)
+static void vo_x11_highlevel_resize(struct vo *vo, struct mp_rect rc, bool force)
 {
     struct vo_x11_state *x11 = vo->x11;
     struct mp_vo_opts *opts = x11->opts;
 
-    bool reset_pos = opts->force_window_position;
+    bool reset_pos = opts->force_window_position || force;
     if (reset_pos) {
         x11->nofsrc = rc;
     } else {
@@ -1799,10 +1796,6 @@ void vo_x11_config_vo_window(struct vo *vo)
 
     assert(x11->window);
 
-    // Don't attempt to change autofit/geometry on maximized windows.
-    if (x11->geometry_change && opts->window_maximized)
-        return;
-
     vo_x11_update_screeninfo(vo);
 
     struct vo_win_geometry geo;
@@ -1818,15 +1811,19 @@ void vo_x11_config_vo_window(struct vo *vo)
 
     bool reset_size = (x11->old_dw != RC_W(rc) || x11->old_dh != RC_H(rc)) &&
                       (opts->auto_window_resize || x11->geometry_change);
+    reset_size |= (x11->old_x != rc.x0 || x11->old_y != rc.y0) &&
+                  (x11->geometry_change);
 
     x11->old_dw = RC_W(rc);
     x11->old_dh = RC_H(rc);
+    x11->old_x = rc.x0;
+    x11->old_y = rc.y0;
 
     if (x11->window_hidden) {
         x11->nofsrc = rc;
         vo_x11_map_window(vo, rc);
     } else if (reset_size) {
-        vo_x11_highlevel_resize(vo, rc);
+        vo_x11_highlevel_resize(vo, rc, x11->geometry_change);
     }
 
     x11->geometry_change = false;
@@ -2092,6 +2089,12 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
             if (opt == &opts->geometry || opt == &opts->autofit ||
                 opt == &opts->autofit_smaller || opt == &opts->autofit_larger)
             {
+                if (opts->window_maximized && !opts->fullscreen) {
+                    x11->opts->window_maximized = false;
+                    m_config_cache_write_opt(x11->opts_cache,
+                            &x11->opts->window_maximized);
+                    vo_x11_maximize(vo);
+                }
                 vo_x11_set_geometry(vo);
             }
         }
@@ -2101,16 +2104,16 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
         int *s = arg;
         if (!x11->window || x11->parent)
             return VO_FALSE;
-        s[0] = (x11->fs ? RC_W(x11->nofsrc) : RC_W(x11->winrc)) / x11->dpi_scale;
-        s[1] = (x11->fs ? RC_H(x11->nofsrc) : RC_H(x11->winrc)) / x11->dpi_scale;
+        s[0] = x11->fs ? RC_W(x11->nofsrc) : RC_W(x11->winrc);
+        s[1] = x11->fs ? RC_H(x11->nofsrc) : RC_H(x11->winrc);
         return VO_TRUE;
     }
     case VOCTRL_SET_UNFS_WINDOW_SIZE: {
         int *s = arg;
         if (!x11->window || x11->parent)
             return VO_FALSE;
-        int w = s[0] * x11->dpi_scale;
-        int h = s[1] * x11->dpi_scale;
+        int w = s[0];
+        int h = s[1];
         struct mp_rect rc = x11->winrc;
         rc.x1 = rc.x0 + w;
         rc.y1 = rc.y0 + h;
@@ -2120,7 +2123,7 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
                     &x11->opts->window_maximized);
             vo_x11_maximize(vo);
         }
-        vo_x11_highlevel_resize(vo, rc);
+        vo_x11_highlevel_resize(vo, rc, false);
         if (!x11->fs) { // guess new window size, instead of waiting for X
             x11->winrc.x1 = x11->winrc.x0 + w;
             x11->winrc.y1 = x11->winrc.y0 + h;
@@ -2207,6 +2210,9 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
     }
     case VOCTRL_GET_HIDPI_SCALE:
         *(double *)arg = x11->dpi_scale;
+        return VO_TRUE;
+    case VOCTRL_BEGIN_DRAGGING:
+        vo_x11_begin_dragging(vo);
         return VO_TRUE;
     }
     return VO_NOTIMPL;

@@ -452,9 +452,9 @@ Remember to quote string arguments in input.conf (see `Flat command syntax`_).
     restarted if for example the new playlist entry is the same as the previous
     one.
 
-``loadfile <url> [<flags> [<options>]]``
+``loadfile <url> [<flags> [<index> [<options>]]]``
     Load the given file or URL and play it. Technically, this is just a playlist
-    manipulation command (which either replaces the playlist or appends an entry
+    manipulation command (which either replaces the playlist or adds an entry
     to it). Actual file loading happens independently. For example, a
     ``loadfile`` command that replaces the current file with a new one returns
     before the current file is stopped, and the new file even begins loading.
@@ -469,15 +469,34 @@ Remember to quote string arguments in input.conf (see `Flat command syntax`_).
         Append the file, and if nothing is currently playing, start playback.
         (Always starts with the added file, even if the playlist was not empty
         before running this command.)
+    <insert-next>
+        Insert the file into the playlist, directly after the current entry.
+    <insert-next-play>
+        Insert the file next, and if nothing is currently playing, start playback.
+        (Always starts with the added file, even if the playlist was not empty
+        before running this command.)
+    <insert-at>
+        Insert the file into the playlist, at the index given in the third
+        argument.
+    <insert-at-play>
+        Insert the file at the index given in the third argument, and if nothing
+        is currently playing, start playback. (Always starts with the added
+        file, even if the playlist was not empty before running this command.)
 
-    The third argument is a list of options and values which should be set
+    The third argument is an insertion index, used only by the ``insert-at`` and
+    ``insert-at-play`` actions. When used with those actions, the new item will
+    be inserted at the index position in the playlist, or appended to the end if
+    index is less than 0 or greater than the size of the playlist. This argument
+    will be ignored for all other actions.
+
+    The fourth argument is a list of options and values which should be set
     while the file is playing. It is of the form ``opt1=value1,opt2=value2,..``.
     When using the client API, this can be a ``MPV_FORMAT_NODE_MAP`` (or a Lua
     table), however the values themselves must be strings currently. These
     options are set during playback, and restored to the previous value at end
     of playback (see `Per-File Options`_).
 
-``loadlist <url> [<flags>]``
+``loadlist <url> [<flags> [<index>]]``
     Load the given playlist file or URL (like ``--playlist``).
 
     Second argument:
@@ -490,6 +509,26 @@ Remember to quote string arguments in input.conf (see `Flat command syntax`_).
         Append the new playlist, and if nothing is currently playing, start
         playback. (Always starts with the new playlist, even if the internal
         playlist was not empty before running this command.)
+    <insert-next>
+        Insert the new playlist into the current internal playlist, directly
+        after the current entry.
+    <insert-next-play>
+        Insert the new playlist, and if nothing is currently playing, start
+        playback. (Always starts with the new playlist, even if the internal
+        playlist was not empty before running this command.)
+    <insert-at>
+        Insert the new playlist at the index given in the third argument.
+    <insert-at-play>
+        Insert the new playlist at the index given in the third argument, and if
+        nothing is currently playing, start playback. (Always starts with the
+        new playlist, even if the internal playlist was not empty before running
+        this command.)
+
+    The third argument is an insertion index, used only by the ``insert-at`` and
+    ``insert-at-play`` actions. When used with those actions, the new playlist
+    will be inserted at the index position in the internal playlist, or appended
+    to the end if index is less than 0 or greater than the size of the internal
+    playlist. This argument will be ignored for all other actions.
 
 ``playlist-clear``
     Clear the playlist, except the currently played file.
@@ -1220,6 +1259,18 @@ Input Commands that are Possibly Subject to Change
         use the ``mp.create_osd_overlay()`` helper instead of invoking this
         command directly.
 
+``escape-ass <text>``
+    Modify ``text`` so that commands and functions that interpret ASS tags,
+    such as ``osd-overlay`` and ``mp.create_osd_overlay``, will display it
+    verbatim, and return it. This can only be used through the client API or
+    from a script using ``mp.command_native``.
+
+    .. admonition:: Example
+
+        ``mp.osd_message(mp.command_native({"escape-ass", "foo {bar}"}))``
+
+        This line of Lua prints "foo \\{bar}" on the OSD.
+
 ``script-message [<arg1> [<arg2> [...]]]``
     Send a message to all clients, and pass it the following list of arguments.
     What this message means, how many arguments it takes, and what the arguments
@@ -1438,6 +1489,13 @@ Input Commands that are Possibly Subject to Change
 
     This command has an even more uncertain future than ``ab-loop-dump-cache``
     and might disappear without replacement if the author decides it's useless.
+
+``begin-vo-dragging``
+    Begin window dragging if supported by the current VO. This command should
+    only be called while a mouse button is being pressed, otherwise it will
+    be ignored. The exact effect of this command depends on the VO implementation
+    of window dragging. For example, on Windows only the left mouse button can
+    begin window dragging, while X11 and Wayland allow other mouse buttons.
 
 Undocumented commands: ``ao-reload`` (experimental/internal).
 
@@ -2601,6 +2659,11 @@ Property list
 
     Has the same sub-properties as ``video-params``.
 
+``video-target-params``
+    Same as ``video-params``, but with the target properties that VO outputs to.
+
+    Has the same sub-properties as ``video-params``.
+
 ``video-frame-info``
     Approximate information of the current frame. Note that if any of these
     are used on OSD, the information might be off by a few frames due to OSD
@@ -2752,6 +2815,19 @@ Property list
 
     Any of these properties may be unavailable or set to dummy values if the
     VO window is not created or visible.
+
+``term-size``
+    The current terminal size.
+
+    This has two sub-properties.
+
+    ``term-size/w``
+        width of the terminal in cells
+    ``term-size/h``
+        height of the terminal in cells
+
+    This property is not observable. Reacting to size changes requires
+    polling.
 
 ``window-id``
     Read-only - mpv's window id. May not always be available, i.e due to window
@@ -3037,6 +3113,11 @@ Property list
 
     ``track-list/N/demux-par``
         Pixel aspect ratio.
+
+    ``track-list/N/format-name``
+        Short name for format from ffmpeg. If the track is audio, this will be
+        the name of the sample format. If the track is video, this will be the
+        name of the pixel format.
 
     ``track-list/N/audio-channels`` (deprecated)
         Deprecated alias for ``track-list/N/demux-channel-count``.
@@ -3685,7 +3766,9 @@ Normally, properties are formatted as human-readable text, meant to be
 displayed on OSD or on the terminal. It is possible to retrieve an unformatted
 (raw) value from a property by prefixing its name with ``=``. These raw values
 can be parsed by other programs and follow the same conventions as the options
-associated with the properties.
+associated with the properties. Additionally, there is a ``>`` prefix to format
+human-readable text, with fixed precision for floating-point values. This is
+useful for printing values where a constant width is important.
 
 .. admonition:: Examples
 
@@ -3693,6 +3776,10 @@ associated with the properties.
       minutes 23 seconds)
     - ``${=time-pos}`` expands to ``863.4`` (same time, plus 400 milliseconds -
       milliseconds are normally not shown in the formatted case)
+
+    - ``${avsync}`` expands to ``+0.003``
+    - ``${>avsync}`` expands to ``+0.0030``
+    - ``${=avsync}`` expands to ``0.003028``
 
 Sometimes, the difference in amount of information carried by raw and formatted
 property values can be rather big. In some cases, raw values have more

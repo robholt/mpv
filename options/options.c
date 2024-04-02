@@ -42,6 +42,7 @@
 #include "input/event.h"
 #include "stream/stream.h"
 #include "video/csputils.h"
+#include "video/filter/refqueue.h"
 #include "video/hwdec.h"
 #include "video/image_writer.h"
 #include "sub/osd.h"
@@ -112,7 +113,9 @@ static const m_option_t mp_vo_opt_list[] = {
     {"vo", OPT_SETTINGSLIST(video_driver_list, &vo_obj_list)},
     {"taskbar-progress", OPT_BOOL(taskbar_progress)},
     {"drag-and-drop", OPT_CHOICE(drag_and_drop, {"no", -2}, {"auto", -1},
-        {"replace", DND_REPLACE}, {"append", DND_APPEND})},
+        {"replace", DND_REPLACE},
+        {"append", DND_APPEND},
+        {"insert-next", DND_INSERT_NEXT})},
     {"snap-window", OPT_BOOL(snap_window)},
     {"ontop", OPT_BOOL(ontop)},
     {"ontop-level", OPT_CHOICE(ontop_level, {"window", -1}, {"system", -2},
@@ -128,7 +131,8 @@ static const m_option_t mp_vo_opt_list[] = {
     {"window-scale", OPT_DOUBLE(window_scale), M_RANGE(0.001, 100)},
     {"window-minimized", OPT_BOOL(window_minimized)},
     {"window-maximized", OPT_BOOL(window_maximized)},
-    {"focus-on-open", OPT_BOOL(focus_on_open)},
+    {"focus-on-open", OPT_REMOVED("Replaced by --focus-on")},
+    {"focus-on", OPT_CHOICE(focus_on, {"never", 0}, {"open", 1}, {"all", 2})},
     {"force-render", OPT_BOOL(force_render)},
     {"force-window-position", OPT_BOOL(force_window_position)},
     {"x11-name", OPT_STRING(winname)},
@@ -237,7 +241,6 @@ const struct m_sub_options vo_sub_opts = {
         .auto_window_resize = true,
         .keepaspect = true,
         .keepaspect_window = true,
-        .hidpi_window_scale = true,
         .native_fs = true,
         .taskbar_progress = true,
         .border = true,
@@ -252,7 +255,7 @@ const struct m_sub_options vo_sub_opts = {
         .ontop_level = -1,
         .timing_offset = 0.050,
         .swapchain_depth = 3,
-        .focus_on_open = true,
+        .focus_on = 1,
     },
 };
 
@@ -394,7 +397,7 @@ const struct m_sub_options mp_osd_render_sub_opts = {
         .osd_bar_align_y = 0.5,
         .osd_bar_w = 75.0,
         .osd_bar_h = 3.125,
-        .osd_bar_border_size = 1.2,
+        .osd_bar_border_size = 0.5,
         .osd_scale = 1,
         .osd_scale_by_window = true,
     },
@@ -439,9 +442,16 @@ const struct m_sub_options filter_conf = {
     .opts = (const struct m_option[]){
         {"deinterlace", OPT_CHOICE(deinterlace,
             {"no", 0}, {"yes", 1}, {"auto", -1})},
+        {"deinterlace-field-parity", OPT_CHOICE(field_parity,
+            {"tff", MP_FIELD_PARITY_TFF},
+            {"bff", MP_FIELD_PARITY_BFF},
+            {"auto", MP_FIELD_PARITY_AUTO})},
         {0}
     },
     .size = sizeof(OPT_BASE_STRUCT),
+    .defaults = &(const struct filter_opts){
+        .field_parity = MP_FIELD_PARITY_AUTO,
+    },
     .change_flags = UPDATE_IMGPAR,
 };
 
@@ -843,6 +853,7 @@ static const m_option_t mp_opts[] = {
     {"idle", OPT_CHOICE(player_idle_mode,
         {"no",   0}, {"once", 1}, {"yes",  2})},
 
+    {"input-commands", OPT_STRINGLIST(input_commands)},
     {"input-terminal", OPT_BOOL(consolecontrols), .flags = UPDATE_TERM},
 
     {"input-ipc-server", OPT_STRING(ipc_path), .flags = M_OPT_FILE},

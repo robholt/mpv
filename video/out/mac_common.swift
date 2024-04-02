@@ -24,12 +24,12 @@ class MacCommon: Common {
     var swapTime: UInt64 = 0
     let swapLock: NSCondition = NSCondition()
 
-    var needsICCUpdate: Bool = false
-
     @objc init(_ vo: UnsafeMutablePointer<vo>) {
-        let newlog = mp_log_new(vo, vo.pointee.log, "mac")
-        super.init(newlog)
-        mpv = MPVHelper(vo, log)
+        let log = LogHelper(mp_log_new(vo, vo.pointee.log, "mac"))
+        let option = OptionHelper(vo, vo.pointee.global)
+        super.init(option, log)
+        self.vo = vo
+        input = InputHelper(vo.pointee.input_ctx, option)
         timer = PreciseTimer(common: self)
 
         DispatchQueue.main.sync {
@@ -39,16 +39,16 @@ class MacCommon: Common {
     }
 
     @objc func config(_ vo: UnsafeMutablePointer<vo>) -> Bool {
-        mpv?.vo = vo
+        self.vo = vo
 
         DispatchQueue.main.sync {
             let previousActiveApp = getActiveApp()
             initApp()
 
-            let (_, _, wr) = getInitProperties(vo)
+            let (_, wr) = getInitProperties(vo)
 
             guard let layer = self.layer else {
-                log.sendError("Something went wrong, no MetalLayer was initialized")
+                log.error("Something went wrong, no MetalLayer was initialized")
                 exit(1)
             }
 
@@ -59,13 +59,17 @@ class MacCommon: Common {
             }
 
             if !NSEqualSizes(window?.unfsContentFramePixel.size ?? NSZeroSize, wr.size) &&
-               mpv?.opts.auto_window_resize ?? true
+               option.vo.auto_window_resize
             {
                 window?.updateSize(wr.size)
             }
 
+            if option.vo.focus_on == 2 {
+                NSApp.activate(ignoringOtherApps: true)
+            }
+
             windowDidResize()
-            needsICCUpdate = true
+            updateICCProfile()
         }
 
         return true
@@ -85,7 +89,7 @@ class MacCommon: Common {
     }
 
     @objc func swapBuffer() {
-        if mpv?.macOpts.macos_render_timer ?? Int32(RENDER_TIMER_CALLBACK) != RENDER_TIMER_SYSTEM {
+        if option.mac.macos_render_timer != RENDER_TIMER_SYSTEM {
             swapLock.lock()
             while(swapTime < 1) {
                 swapLock.wait()
@@ -93,17 +97,6 @@ class MacCommon: Common {
             swapTime = 0
             swapLock.unlock()
         }
-
-        if needsICCUpdate {
-            needsICCUpdate = false
-            updateICCProfile()
-        }
-    }
-
-    func updateRenderSize(_ size: NSSize) {
-        mpv?.vo.pointee.dwidth = Int32(size.width)
-        mpv?.vo.pointee.dheight = Int32(size.height)
-        flagEvents(VO_EVENT_RESIZE | VO_EVENT_EXPOSE)
     }
 
     override func displayLinkCallback(_ displayLink: CVDisplayLink,
@@ -112,7 +105,6 @@ class MacCommon: Common {
                                           _ flagsIn: CVOptionFlags,
                                          _ flagsOut: UnsafeMutablePointer<CVOptionFlags>) -> CVReturn
     {
-        let frameTimer = mpv?.macOpts.macos_render_timer ?? Int32(RENDER_TIMER_CALLBACK)
         let signalSwap = {
             self.swapLock.lock()
             self.swapTime += 1
@@ -120,8 +112,8 @@ class MacCommon: Common {
             self.swapLock.unlock()
         }
 
-        if frameTimer != RENDER_TIMER_SYSTEM {
-            if let timer = self.timer, frameTimer == RENDER_TIMER_PRECISE {
+        if option.mac.macos_render_timer != RENDER_TIMER_SYSTEM {
+            if let timer = self.timer, option.mac.macos_render_timer == RENDER_TIMER_PRECISE {
                 timer.scheduleAt(time: inOutputTime.pointee.hostTime, closure: signalSwap)
                 return kCVReturnSuccess
             }
@@ -146,27 +138,16 @@ class MacCommon: Common {
         flagEvents(VO_EVENT_AMBIENT_LIGHTING_CHANGED)
     }
 
-    @objc override func updateICCProfile() {
-        guard let colorSpace = window?.screen?.colorSpace else {
-            log.sendWarning("Couldn't update ICC Profile, no color space available")
-            return
-        }
-
-        layer?.colorspace = colorSpace.cgColorSpace
+    override func updateICCProfile() {
         flagEvents(VO_EVENT_ICC_PROFILE_CHANGED)
     }
 
     override func windowDidResize() {
-        guard let window = window else {
-            log.sendWarning("No window available on window resize event")
-            return
-        }
-
-        updateRenderSize(window.framePixel.size)
+        flagEvents(VO_EVENT_RESIZE | VO_EVENT_EXPOSE)
     }
 
     override func windowDidChangeScreenProfile() {
-        needsICCUpdate = true
+        updateICCProfile()
     }
 
     override func windowDidChangeBackingProperties() {

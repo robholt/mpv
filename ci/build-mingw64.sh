@@ -6,10 +6,11 @@ ln -snf . "$prefix_dir/usr"
 ln -snf . "$prefix_dir/local"
 
 wget="wget -nc --progress=bar:force"
-gitclone="git clone --depth=1 --recursive"
+gitclone="git clone --depth=1 --recursive --shallow-submodules"
 
 # -posix is Ubuntu's variant with pthreads support
 export CC=$TARGET-gcc-posix
+export AS=$TARGET-gcc-posix
 export CXX=$TARGET-g++-posix
 export AR=$TARGET-ar
 export NM=$TARGET-nm
@@ -50,9 +51,11 @@ EOF
 # CMake
 cmake_args=(
     -Wno-dev
+    -DCMAKE_SYSTEM_PROCESSOR="${fam}"
     -DCMAKE_SYSTEM_NAME=Windows
     -DCMAKE_FIND_ROOT_PATH="$PKG_CONFIG_SYSROOT_DIR"
     -DCMAKE_RC_COMPILER="${TARGET}-windres"
+    -DCMAKE_ASM_COMPILER="$AS"
     -DCMAKE_BUILD_TYPE=Release
 )
 
@@ -110,7 +113,7 @@ _iconv () {
 _iconv_mark=lib/libiconv.dll.a
 
 _zlib () {
-    local ver=1.3
+    local ver=1.3.1
     gettar "https://zlib.net/fossils/zlib-${ver}.tar.gz"
     pushd zlib-${ver}
     make -fwin32/Makefile.gcc clean
@@ -121,6 +124,16 @@ _zlib () {
 }
 _zlib_mark=lib/libz.dll.a
 
+_dav1d () {
+    [ -d dav1d ] || $gitclone https://code.videolan.org/videolan/dav1d.git
+    builddir dav1d
+    meson setup .. --cross-file "$prefix_dir/crossfile" \
+        -Denable_{tools,tests}=false
+    makeplusinstall
+    popd
+}
+_dav1d_mark=lib/libdav1d.dll.a
+
 _ffmpeg () {
     [ -d ffmpeg ] || $gitclone https://github.com/FFmpeg/FFmpeg.git ffmpeg
     builddir ffmpeg
@@ -129,7 +142,7 @@ _ffmpeg () {
         --enable-cross-compile --cross-prefix=$TARGET- --arch=${TARGET%%-*}
         --cc="$CC" --cxx="$CXX" $commonflags
         --disable-{doc,programs,muxers,encoders}
-        --enable-encoder=mjpeg,png
+        --enable-encoder=mjpeg,png --enable-libdav1d
     )
     pkg-config vulkan && args+=(--enable-vulkan --enable-libshaderc)
     ../configure "${args[@]}"
@@ -161,8 +174,16 @@ _spirv_cross () {
 }
 _spirv_cross_mark=lib/libspirv-cross-c-shared.dll.a
 
+_nv_headers () {
+    [ -d nv-codec-headers ] || $gitclone https://github.com/FFmpeg/nv-codec-headers
+    pushd nv-codec-headers
+    makeplusinstall
+    popd
+}
+_nv_headers_mark=include/ffnvcodec/dynlink_loader.h
+
 _vulkan_headers () {
-    [ -d Vulkan-Headers ] || $gitclone https://github.com/KhronosGroup/Vulkan-Headers -b v1.3.276
+    [ -d Vulkan-Headers ] || $gitclone https://github.com/KhronosGroup/Vulkan-Headers
     builddir Vulkan-Headers
     cmake .. "${cmake_args[@]}"
     makeplusinstall
@@ -171,10 +192,10 @@ _vulkan_headers () {
 _vulkan_headers_mark=include/vulkan/vulkan.h
 
 _vulkan_loader () {
-    [ -d Vulkan-Loader ] || $gitclone https://github.com/KhronosGroup/Vulkan-Loader -b v1.3.276
+    [ -d Vulkan-Loader ] || $gitclone https://github.com/KhronosGroup/Vulkan-Loader
     builddir Vulkan-Loader
     cmake .. "${cmake_args[@]}" \
-        -DENABLE_WERROR=OFF
+        -DENABLE_WERROR=OFF -DUSE_GAS=ON
     makeplusinstall
     popd
 }
@@ -191,7 +212,7 @@ _libplacebo () {
 _libplacebo_mark=lib/libplacebo.dll.a
 
 _freetype () {
-    local ver=2.13.1
+    local ver=2.13.2
     gettar "https://mirror.netcologne.de/savannah/freetype/freetype-${ver}.tar.xz"
     builddir freetype-${ver}
     meson setup .. --cross-file "$prefix_dir/crossfile"
@@ -212,7 +233,7 @@ _fribidi () {
 _fribidi_mark=lib/libfribidi.dll.a
 
 _harfbuzz () {
-    local ver=8.1.1
+    local ver=8.3.0
     gettar "https://github.com/harfbuzz/harfbuzz/releases/download/${ver}/harfbuzz-${ver}.tar.xz"
     builddir harfbuzz-${ver}
     meson setup .. --cross-file "$prefix_dir/crossfile" \
@@ -246,7 +267,7 @@ _luajit () {
 }
 _luajit_mark=lib/libluajit-5.1.a
 
-for x in iconv zlib shaderc spirv-cross; do
+for x in iconv zlib shaderc spirv-cross nv-headers dav1d; do
     build_if_missing $x
 done
 if [[ "$TARGET" != "i686-"* ]]; then
@@ -291,9 +312,11 @@ if [ "$2" = pack ]; then
     dlls=(
         libgcc_*.dll lib{ssp,stdc++,winpthread}-[0-9]*.dll # compiler runtime
         av*.dll sw*.dll lib{ass,freetype,fribidi,harfbuzz,iconv,placebo}-[0-9]*.dll
-        lib{shaderc_shared,spirv-cross-c-shared}.dll zlib1.dll
-        # note: vulkan-1.dll is not here since drivers provide it
+        lib{shaderc_shared,spirv-cross-c-shared,dav1d}.dll zlib1.dll
     )
+    if [[ -f vulkan-1.dll ]]; then
+        dlls+=(vulkan-1.dll)
+    fi
     mv -v "${dlls[@]}" ..
     popd
 

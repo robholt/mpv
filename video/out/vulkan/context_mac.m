@@ -15,8 +15,10 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#import <QuartzCore/QuartzCore.h>
+
 #include "video/out/gpu/context.h"
-#include "osdep/macOS_swift.h"
+#include "osdep/mac/swift.h"
 
 #include "common.h"
 #include "context.h"
@@ -56,7 +58,7 @@ static bool mac_vk_init(struct ra_ctx *ctx)
         goto error;
 
     VkMetalSurfaceCreateInfoEXT mac_info = {
-        .sType = VK_STRUCTURE_TYPE_MACOS_SURFACE_CREATE_INFO_MVK,
+        .sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT,
         .pNext = NULL,
         .flags = 0,
         .pLayer = p->vo_mac.layer,
@@ -85,7 +87,14 @@ error:
 
 static bool resize(struct ra_ctx *ctx)
 {
-    return ra_vk_ctx_resize(ctx, ctx->vo->dwidth, ctx->vo->dheight);
+    struct priv *p = ctx->priv;
+
+    if (!p->vo_mac.window) {
+        return false;
+    }
+    CGSize size = p->vo_mac.window.framePixel.size;
+
+    return ra_vk_ctx_resize(ctx, (int)size.width, (int)size.height);
 }
 
 static bool mac_vk_reconfig(struct ra_ctx *ctx)
