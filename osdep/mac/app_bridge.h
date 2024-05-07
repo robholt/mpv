@@ -29,9 +29,28 @@ enum {
 };
 
 enum {
-    RENDER_TIMER_CALLBACK = 0,
-    RENDER_TIMER_PRECISE,
+    RENDER_TIMER_PRESENTATION_FEEDBACK = -1,
     RENDER_TIMER_SYSTEM,
+    RENDER_TIMER_CALLBACK,
+    RENDER_TIMER_PRECISE,
+};
+
+enum {
+    MAC_CSP_AUTO = -1,
+    MAC_CSP_DISPLAY_P3,
+    MAC_CSP_DISPLAY_P3_HLG,
+    MAC_CSP_DISPLAY_P3_PQ,
+    MAC_CSP_DISPLAY_P3_LINEAR,
+    MAC_CSP_DCI_P3,
+    MAC_CSP_BT_2020,
+    MAC_CSP_BT_2020_LINEAR,
+    MAC_CSP_BT_2100_HLG,
+    MAC_CSP_BT_2100_PQ,
+    MAC_CSP_BT_709,
+    MAC_CSP_SRGB,
+    MAC_CSP_SRGB_LINEAR,
+    MAC_CSP_RGB_LINEAR,
+    MAC_CSP_ADOBE,
 };
 
 struct macos_opts {
@@ -45,6 +64,7 @@ struct macos_opts {
     int macos_render_timer;
     int cocoa_cb_sw_renderer;
     bool cocoa_cb_10bit_context;
+    int cocoa_cb_output_csp;
 };
 
 void cocoa_init_media_keys(void);

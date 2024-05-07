@@ -24,9 +24,26 @@ extension NSDeviceDescriptionKey {
 
 extension NSScreen {
     public var displayID: CGDirectDisplayID {
-        get {
-            return deviceDescription[.screenNumber] as? CGDirectDisplayID ?? 0
+        return deviceDescription[.screenNumber] as? CGDirectDisplayID ?? 0
+    }
+
+    public var serialNumber: String {
+        return String(CGDisplaySerialNumber(displayID))
+    }
+
+    public var name: String {
+        guard let regex = try? NSRegularExpression(pattern: " \\(\\d+\\)$", options: .caseInsensitive) else {
+            return localizedName
         }
+        return regex.stringByReplacingMatches(
+            in: localizedName,
+            range: NSRange(location: 0, length: localizedName.count),
+            withTemplate: ""
+        )
+    }
+
+    public var uniqueName: String {
+        return name + " (\(serialNumber))"
     }
 }
 
