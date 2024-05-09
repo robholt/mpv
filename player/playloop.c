@@ -714,7 +714,7 @@ static void handle_update_cache(struct MPContext *mpctx)
     }
 
     bool is_low = use_pause_on_low_cache && !s.idle &&
-                  s.ts_info.duration < opts->cache_pause_wait;
+                  s.ts_duration < opts->cache_pause_wait;
 
     // Enter buffering state only if there actually was an underrun (or if
     // initial caching before playback restart is used).
@@ -754,7 +754,7 @@ static void handle_update_cache(struct MPContext *mpctx)
 
     if (mpctx->paused_for_cache) {
         cache_buffer =
-            100 * MPCLAMP(s.ts_info.duration / opts->cache_pause_wait, 0, 0.99);
+            100 * MPCLAMP(s.ts_duration / opts->cache_pause_wait, 0, 0.99);
         mp_set_timeout(mpctx, 0.2);
     }
 
@@ -775,15 +775,15 @@ static void handle_update_cache(struct MPContext *mpctx)
         if ((mpctx->cache_buffer == 100) != (cache_buffer == 100)) {
             if (cache_buffer < 100) {
                 MP_VERBOSE(mpctx, "Enter buffering (buffer went from %d%% -> %d%%) [%fs].\n",
-                           mpctx->cache_buffer, cache_buffer, s.ts_info.duration);
+                           mpctx->cache_buffer, cache_buffer, s.ts_duration);
             } else {
                 double t = now - mpctx->cache_stop_time;
                 MP_VERBOSE(mpctx, "End buffering (waited %f secs) [%fs].\n",
-                           t, s.ts_info.duration);
+                           t, s.ts_duration);
             }
         } else {
             MP_VERBOSE(mpctx, "Still buffering (buffer went from %d%% -> %d%%) [%fs].\n",
-                       mpctx->cache_buffer, cache_buffer, s.ts_info.duration);
+                       mpctx->cache_buffer, cache_buffer, s.ts_duration);
         }
         mpctx->cache_buffer = cache_buffer;
         force_update = true;
@@ -801,22 +801,6 @@ static void handle_update_cache(struct MPContext *mpctx)
 int get_cache_buffering_percentage(struct MPContext *mpctx)
 {
     return mpctx->demuxer ? mpctx->cache_buffer : -1;
-}
-
-static void handle_update_subtitles(struct MPContext *mpctx)
-{
-    if (mpctx->video_status == STATUS_EOF) {
-        update_subtitles(mpctx, mpctx->playback_pts);
-        return;
-    }
-
-    for (int n = 0; n < mpctx->num_tracks; n++) {
-        struct track *track = mpctx->tracks[n];
-        if (track->type == STREAM_SUB && !track->demuxer_ready) {
-            update_subtitles(mpctx, mpctx->playback_pts);
-            break;
-        }
-    }
 }
 
 static void handle_cursor_autohide(struct MPContext *mpctx)
@@ -1249,8 +1233,8 @@ void run_playloop(struct MPContext *mpctx)
     handle_dummy_ticks(mpctx);
 
     update_osd_msg(mpctx);
-
-    handle_update_subtitles(mpctx);
+    if (mpctx->video_status == STATUS_EOF)
+        update_subtitles(mpctx, mpctx->playback_pts);
 
     handle_each_frame_screenshot(mpctx);
 

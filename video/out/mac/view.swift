@@ -19,7 +19,7 @@ import Cocoa
 
 class View: NSView, CALayerDelegate {
     unowned var common: Common
-    var input: InputHelper? { return common.input }
+    var input: InputHelper? { get { return common.input } }
 
     var tracker: NSTrackingArea?
     var hasMouseDown: Bool = false
@@ -27,12 +27,12 @@ class View: NSView, CALayerDelegate {
     override var isFlipped: Bool { return true }
     override var acceptsFirstResponder: Bool { return true }
 
+
     init(frame: NSRect, common com: Common) {
         common = com
         super.init(frame: frame)
         autoresizingMask = [.width, .height]
         wantsBestResolutionOpenGLSurface = true
-        wantsExtendedDynamicRangeOpenGLSurface = true
         registerForDraggedTypes([ .fileURL, .URL, .string ])
     }
 
@@ -65,10 +65,9 @@ class View: NSView, CALayerDelegate {
     }
 
     func isURL(_ str: String) -> Bool {
-        guard let regex = try? NSRegularExpression(pattern: "^(https?|ftp)://[^\\s/$.?#].[^\\s]*$",
-                                                   options: .caseInsensitive) else {
-            return false
-        }
+        // force unwrapping is fine here, regex is guaranteed to be valid
+        let regex = try! NSRegularExpression(pattern: "^(https?|ftp)://[^\\s/$.?#].[^\\s]*$",
+                                             options: .caseInsensitive)
         let isURL = regex.numberOfMatches(in: str,
                                      options: [],
                                        range: NSRange(location: 0, length: str.count))

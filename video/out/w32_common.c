@@ -40,7 +40,6 @@
 #include "w32_common.h"
 #include "win32/displayconfig.h"
 #include "win32/droptarget.h"
-#include "win32/menu.h"
 #include "osdep/io.h"
 #include "osdep/threads.h"
 #include "osdep/w32_keyboard.h"
@@ -83,8 +82,6 @@ typedef enum MONITOR_DPI_TYPE {
 #define rect_w(r) ((r).right - (r).left)
 #define rect_h(r) ((r).bottom - (r).top)
 
-#define WM_SHOWMENU (WM_USER + 1)
-
 struct w32_api {
     HRESULT (WINAPI *pGetDpiForMonitor)(HMONITOR, MONITOR_DPI_TYPE, UINT*, UINT*);
     BOOL (WINAPI *pAdjustWindowRectExForDpi)(LPRECT lpRect, DWORD dwStyle, BOOL bMenu, DWORD dwExStyle, UINT dpi);
@@ -111,8 +108,6 @@ struct vo_w32_state {
     HWND parent; // 0 normally, set in embedding mode
     HHOOK parent_win_hook;
     HWINEVENTHOOK parent_evt_hook;
-
-    struct menu_ctx *menu_ctx;
 
     HMONITOR monitor; // Handle of the current screen
     char *color_profile; // Path of the current screen's color profile
@@ -210,7 +205,7 @@ static inline int get_system_metrics(struct vo_w32_state *w32, int metric)
 
 static void adjust_window_rect(struct vo_w32_state *w32, HWND hwnd, RECT *rc)
 {
-    if (!w32->opts->border && !IsMaximized(w32->window))
+    if (!w32->opts->border)
         return;
 
     if (w32->api.pAdjustWindowRectExForDpi) {
@@ -244,7 +239,7 @@ static bool check_windows10_build(DWORD build)
 // Get adjusted title bar height, only relevant for --title-bar=no
 static int get_title_bar_height(struct vo_w32_state *w32)
 {
-    assert(w32->opts->border ? !w32->opts->title_bar : IsMaximized(w32->window));
+    assert(!w32->opts->title_bar && w32->opts->border);
     UINT visible_border = 0;
     // Only available on Windows 11, check in case it's backported and breaks
     // WM_NCCALCSIZE exception for Windows 10.
@@ -568,29 +563,19 @@ static void begin_dragging(struct vo_w32_state *w32)
     mp_input_put_key(w32->input_ctx, MP_INPUT_RELEASE_ALL);
 }
 
-// If native touch is enabled and the mouse event is emulated, ignore it.
-// See: <https://learn.microsoft.com/en-us/windows/win32/tablet/
-//       system-events-and-mouse-messages#distinguishing-pen-input-from-mouse-and-touch>
-static bool should_ignore_mouse_event(const struct vo_w32_state *w32)
+static bool handle_mouse_down(struct vo_w32_state *w32, int btn, int x, int y)
 {
-    return w32->opts->native_touch && ((GetMessageExtraInfo() & 0xFFFFFF00) == 0xFF515700);
-}
-
-static void handle_mouse_down(struct vo_w32_state *w32, int btn, int x, int y)
-{
-    if (should_ignore_mouse_event(w32))
-        return;
     btn |= mod_state(w32);
     mp_input_put_key(w32->input_ctx, btn | MP_KEY_STATE_DOWN);
     SetCapture(w32->window);
+    return false;
 }
 
 static void handle_mouse_up(struct vo_w32_state *w32, int btn)
 {
-    if (should_ignore_mouse_event(w32))
-        return;
     btn |= mod_state(w32);
     mp_input_put_key(w32->input_ctx, btn | MP_KEY_STATE_UP);
+
     ReleaseCapture();
 }
 
@@ -957,19 +942,11 @@ static DWORD update_style(struct vo_w32_state *w32, DWORD style)
     if (w32->current_fs) {
         style |= FULLSCREEN;
     } else {
-        style |= (w32->opts->border || w32->opts->window_maximized) ? FRAME : NO_FRAME;
+        style |= w32->opts->border ? FRAME : NO_FRAME;
         if (!w32->opts->title_bar && is_high_contrast())
             style &= ~WS_CAPTION;
     }
     return style;
-}
-
-static DWORD update_exstyle(struct vo_w32_state *w32, DWORD exstyle)
-{
-    exstyle &= ~(WS_EX_TOOLWINDOW);
-    if (!w32->opts->show_in_taskbar)
-        exstyle |= WS_EX_TOOLWINDOW;
-    return exstyle;
 }
 
 static void update_window_style(struct vo_w32_state *w32)
@@ -981,9 +958,7 @@ static void update_window_style(struct vo_w32_state *w32)
     // has to be saved now and restored after setting the new style.
     const RECT wr = w32->windowrc;
     const DWORD style = GetWindowLongPtrW(w32->window, GWL_STYLE);
-    const DWORD exstyle = GetWindowLongPtrW(w32->window, GWL_EXSTYLE);
     SetWindowLongPtrW(w32->window, GWL_STYLE, update_style(w32, style));
-    SetWindowLongPtrW(w32->window, GWL_EXSTYLE, update_exstyle(w32, exstyle));
     w32->windowrc = wr;
 }
 
@@ -1120,8 +1095,6 @@ static void update_maximized_state(struct vo_w32_state *w32, bool leaving_fullsc
 {
     if (w32->parent)
         return;
-
-    update_window_style(w32);
 
     // Apply the maximized state on leaving fullscreen.
     if (w32->current_fs && !leaving_fullscreen)
@@ -1327,19 +1300,6 @@ static void update_cursor_passthrough(const struct vo_w32_state *w32)
     }
 }
 
-static void update_native_touch(const struct vo_w32_state *w32)
-{
-    if (w32->parent)
-        return;
-
-    if (w32->opts->native_touch) {
-        RegisterTouchWindow(w32->window, 0);
-    } else {
-        UnregisterTouchWindow(w32->window);
-        mp_input_put_key(w32->input_ctx, MP_TOUCH_RELEASE_ALL);
-    }
-}
-
 static void set_ime_conversion_mode(const struct vo_w32_state *w32, DWORD mode)
 {
     if (w32->parent)
@@ -1469,7 +1429,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
                     (wp.flags & WPF_RESTORETOMAXIMIZED));
             if (w32->opts->window_maximized != is_maximized) {
                 w32->opts->window_maximized = is_maximized;
-                update_window_style(w32);
                 m_config_cache_write_opt(w32->opts_cache,
                                          &w32->opts->window_maximized);
             }
@@ -1527,15 +1486,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
         w32->window = NULL;
         PostQuitMessage(0);
         break;
-    case WM_COMMAND: {
-        const char *cmd = mp_win32_menu_get_cmd(w32->menu_ctx, LOWORD(wParam));
-        if (cmd) {
-            mp_cmd_t *cmdt = mp_input_parse_cmd(w32->input_ctx, bstr0(cmd), "");
-            mp_input_queue_cmd(w32->input_ctx, cmdt);
-        }
-        break;
-    }
-    case WM_SYSCOMMAND: {
+    case WM_SYSCOMMAND:
         switch (wParam & 0xFFF0) {
         case SC_SCREENSAVE:
         case SC_MONITORPOWER:
@@ -1553,18 +1504,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
             }
             break;
         }
-        // All custom items must use ids of less than 0xF000. The context menu items are
-        // also larger than WM_USER, which excludes SCF_ISSECURE.
-        if (wParam > WM_USER && wParam < 0xF000) {
-            const char *cmd = mp_win32_menu_get_cmd(w32->menu_ctx, LOWORD(wParam));
-            if (cmd) {
-                mp_cmd_t *cmdt = mp_input_parse_cmd(w32->input_ctx, bstr0(cmd), "");
-                mp_input_queue_cmd(w32->input_ctx, cmdt);
-                return 0;
-            }
-        }
         break;
-    }
     case WM_NCACTIVATE:
         // Cosmetic to remove blinking window border when initializing window
         if (!w32->opts->border)
@@ -1652,14 +1592,14 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
         if (x != w32->mouse_x || y != w32->mouse_y) {
             w32->mouse_x = x;
             w32->mouse_y = y;
-            if (!should_ignore_mouse_event(w32))
-                mp_input_set_mouse_pos(w32->input_ctx, x, y);
+            mp_input_set_mouse_pos(w32->input_ctx, x, y);
         }
         break;
     }
     case WM_LBUTTONDOWN:
-        handle_mouse_down(w32, MP_MBTN_LEFT, GET_X_LPARAM(lParam),
-                                             GET_Y_LPARAM(lParam));
+        if (handle_mouse_down(w32, MP_MBTN_LEFT, GET_X_LPARAM(lParam),
+                                                 GET_Y_LPARAM(lParam)))
+            return 0;
         break;
     case WM_LBUTTONUP:
         handle_mouse_up(w32, MP_MBTN_LEFT);
@@ -1704,13 +1644,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
         update_window_state(w32);
         break;
     case WM_NCCALCSIZE:
-        if (!w32->opts->border && !IsMaximized(w32->window))
+        if (!w32->opts->border)
             return 0;
-
         // Apparently removing WS_CAPTION disables some window animation, instead
         // just reduce non-client size to remove title bar.
-        if (wParam && lParam && !w32->current_fs && !w32->parent &&
-            (w32->opts->border ? !w32->opts->title_bar : IsMaximized(w32->window)) &&
+        if (wParam && lParam && w32->opts->border && !w32->opts->title_bar &&
+            !w32->current_fs && !w32->parent &&
             (GetWindowLongPtrW(w32->window, GWL_STYLE) & WS_CAPTION))
         {
             // Remove all NC area on Windows 10 due to inability to control the
@@ -1721,7 +1660,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
             adjust_window_rect(w32, w32->window, &r);
             NCCALCSIZE_PARAMS *p = (LPNCCALCSIZE_PARAMS)lParam;
             p->rgrc[0].top += r.top + get_title_bar_height(w32);
-        }
+       }
         break;
     case WM_IME_STARTCOMPOSITION: {
         HIMC imc = ImmGetContext(w32->window);
@@ -1748,29 +1687,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
             return 0;
         }
         break;
-    case WM_SHOWMENU:
-        mp_win32_menu_show(w32->menu_ctx, w32->window);
-        break;
-    case WM_TOUCH: {
-        UINT count = LOWORD(wParam);
-        TOUCHINPUT *inputs = talloc_array_ptrtype(NULL, inputs, count);
-        if (GetTouchInputInfo((HTOUCHINPUT)lParam, count, inputs, sizeof(TOUCHINPUT))) {
-            for (UINT i = 0; i < count; i++) {
-                TOUCHINPUT *ti = &inputs[i];
-                POINT pt = {TOUCH_COORD_TO_PIXEL(ti->x), TOUCH_COORD_TO_PIXEL(ti->y)};
-                ScreenToClient(w32->window, &pt);
-                if (ti->dwFlags & TOUCHEVENTF_DOWN)
-                    mp_input_add_touch_point(w32->input_ctx, ti->dwID, pt.x, pt.y);
-                if (ti->dwFlags & TOUCHEVENTF_MOVE)
-                    mp_input_update_touch_point(w32->input_ctx, ti->dwID, pt.x, pt.y);
-                if (ti->dwFlags & TOUCHEVENTF_UP)
-                    mp_input_remove_touch_point(w32->input_ctx, ti->dwID);
-            }
-        }
-        CloseTouchInputHandle((HTOUCHINPUT)lParam);
-        talloc_free(inputs);
-        return 0;
-    }
     }
 
     if (message == w32->tbtn_created_msg) {
@@ -2046,7 +1962,6 @@ static MP_THREAD_VOID gui_thread(void *ptr)
         goto done;
     }
 
-    w32->menu_ctx = mp_win32_menu_init(w32->window);
     update_dark_mode(w32);
     update_corners_pref(w32);
     if (w32->opts->window_affinity)
@@ -2055,8 +1970,6 @@ static MP_THREAD_VOID gui_thread(void *ptr)
         update_backdrop(w32);
     if (w32->opts->cursor_passthrough)
         update_cursor_passthrough(w32);
-    if (w32->opts->native_touch)
-        update_native_touch(w32);
 
     if (SUCCEEDED(OleInitialize(NULL))) {
         ole_ok = true;
@@ -2122,8 +2035,6 @@ done:
     MP_VERBOSE(w32, "uninit\n");
 
     remove_parent_hook(w32);
-    if (w32->menu_ctx)
-        mp_win32_menu_uninit(w32->menu_ctx);
     if (w32->window && !w32->destroyed)
         DestroyWindow(w32->window);
     if (w32->taskbar_list)
@@ -2248,21 +2159,12 @@ static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
             {
                 update_window_style(w32);
                 update_window_state(w32);
-            } else if (changed_option == &vo_opts->show_in_taskbar) {
-                // This hide and show is apparently required according to the documentation:
-                // https://learn.microsoft.com/en-us/windows/win32/shell/taskbar#managing-taskbar-buttons
-                ShowWindow(w32->window, SW_HIDE);
-                update_window_style(w32);
-                ShowWindow(w32->window, SW_SHOW);
-                update_window_state(w32);
             } else if (changed_option == &vo_opts->window_minimized) {
                 update_minimized_state(w32);
             } else if (changed_option == &vo_opts->window_maximized) {
                 update_maximized_state(w32, false);
             } else if (changed_option == &vo_opts->window_corners) {
                 update_corners_pref(w32);
-            } else if (changed_option == &vo_opts->native_touch) {
-                update_native_touch(w32);
             } else if (changed_option == &vo_opts->geometry || changed_option == &vo_opts->autofit ||
                 changed_option == &vo_opts->autofit_smaller || changed_option == &vo_opts->autofit_larger)
             {
@@ -2369,12 +2271,6 @@ static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
         return VO_TRUE;
     case VOCTRL_BEGIN_DRAGGING:
         w32->start_dragging = true;
-        return VO_TRUE;
-    case VOCTRL_SHOW_MENU:
-        PostMessageW(w32->window, WM_SHOWMENU, 0, 0);
-        return VO_TRUE;
-    case VOCTRL_UPDATE_MENU:
-        mp_win32_menu_update(w32->menu_ctx, (struct mpv_node *)arg);
         return VO_TRUE;
     }
     return VO_NOTIMPL;

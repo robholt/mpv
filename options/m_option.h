@@ -161,8 +161,6 @@ struct m_obj_list {
     void (*print_help_list)(struct mp_log *log);
     // Callback to print help for _unknown_ entries with "vf=entry=help"
     void (*print_unknown_entry_help)(struct mp_log *log, const char *name);
-    // Get lavfi filters for option-info/[av]f/choices.
-    const char **(*get_lavfi_filters)(void *talloc_ctx);
 };
 
 // Find entry by name
@@ -385,9 +383,6 @@ struct m_option {
 
     // See \ref OptionFlags.
     unsigned int flags;
-
-    // Always force an option update even if the written value does not change.
-    bool force_update;
 
     int offset;
 

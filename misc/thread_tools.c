@@ -18,8 +18,9 @@
 #include <stdatomic.h>
 #include <string.h>
 #include <sys/types.h>
+#include <unistd.h>
 
-#ifdef _WIN32
+#ifdef __MINGW32__
 #include <windows.h>
 #else
 #include <poll.h>
@@ -260,7 +261,7 @@ int mp_cancel_get_fd(struct mp_cancel *c)
     return c->wakeup_pipe[0];
 }
 
-#ifdef _WIN32
+#ifdef __MINGW32__
 void *mp_cancel_get_event(struct mp_cancel *c)
 {
     mp_mutex_lock(&c->lock);

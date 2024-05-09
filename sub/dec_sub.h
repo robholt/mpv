@@ -24,7 +24,6 @@ enum sd_ctrl {
 enum sd_text_type {
     SD_TEXT_TYPE_PLAIN,
     SD_TEXT_TYPE_ASS,
-    SD_TEXT_TYPE_ASS_FULL,
 };
 
 struct sd_times {

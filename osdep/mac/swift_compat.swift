@@ -15,6 +15,7 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+
 #if !swift(>=5.0)
 extension Data {
     mutating func withUnsafeMutableBytes<Type>(_ body: (UnsafeMutableRawBufferPointer) throws -> Type) rethrows -> Type {
@@ -29,7 +30,7 @@ extension Data {
 #if !swift(>=4.2)
 extension NSDraggingInfo {
     var draggingPasteboard: NSPasteboard {
-        return draggingPasteboard()
+        get { return draggingPasteboard() }
     }
 }
 #endif

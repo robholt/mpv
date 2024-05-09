@@ -86,67 +86,6 @@ jobs:
           name: mpv-${{ matrix.target }}
           path: mpv-git-*.zip
 
-  win32:
-    runs-on: windows-latest
-    env:
-      VS: "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise"
-      CC: "clang"
-      CXX: "clang++"
-      CC_LD: "lld"
-      CXX_LD: "lld"
-      WINDRES: "llvm-rc"
-    steps:
-      - name: Disable autocrlf
-        run: |
-          git config --global core.autocrlf false
-          git config --global core.eol lf
-
-      - uses: actions/checkout@v4
-
-      # https://github.com/mesonbuild/meson/pull/11715
-      - name: Install dependencies
-        run: |
-          git clone https://github.com/kasper93/meson --depth 1 -b 8981
-          python -m pip install build wheel
-          python -m build --wheel --no-isolation meson
-          python -m pip install (Get-Item ./meson/dist/meson-*-py3-none-any.whl).FullName
-
-      - name: Update Meson WrapDB
-        run: |
-          meson wrap update-db
-
-      - name: Build
-        id: build
-        run: |
-          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -ne 'C:\Program Files\LLVM\bin' }) -join ';'
-          Import-Module "$env:VS\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-          Enter-VsDevShell -VsInstallPath $env:VS -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
-          ./ci/build-win32.ps1
-
-      - name: Print build log
-        if: ${{ failure() && steps.build.outcome == 'failure' }}
-        run: |
-          cat ./build/meson-logs/meson-log.txt
-
-      - name: Run meson tests
-        id: tests
-        run: |
-          Import-Module "$env:VS\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-          Enter-VsDevShell -VsInstallPath $env:VS -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
-          meson test -C build mpv:
-
-      - name: Print meson test log
-        if: ${{ failure() && steps.tests.outcome == 'failure' }}
-        run: |
-          cat ./build/meson-logs/testlog.txt
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mpv-x86_64-windows-msvc
-          path: |
-            build/mpv.???
-            !build/mpv.lib
-
   macos:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -265,30 +204,6 @@ jobs:
         if: ${{ failure() && steps.tests.outcome == 'failure' }}
         run: |
           cat ./build/meson-logs/testlog.txt
-
-  linux-fuzz:
-    runs-on: "ubuntu-latest"
-    container:
-      image: "registry.opensuse.org/home/mia/images/images/mpv-ci:stable-deps"
-      env:
-        CC: "clang"
-        CXX: "clang++"
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build with meson
-        id: build
-        run: |
-          meson setup build \
-            --werror        \
-            -Dc_args="-Wno-error=deprecated -Wno-error=deprecated-declarations" \
-            -Dfuzzers=true -Dlibmpv=true -Dcplayer=false
-          meson compile -C build
-
-      - name: Print meson log
-        if: ${{ failure() && steps.build.outcome == 'failure' }}
-        run: |
-          cat ./build/meson-logs/meson-log.txt
 
   linux-ffmpeg-4-4:
     runs-on: ubuntu-22.04

@@ -132,8 +132,6 @@ struct track {
     char *external_filename;
     bool auto_loaded;
 
-    bool demuxer_ready; // if more packets should be read (subtitles only)
-
     struct demuxer *demuxer;
     // Invariant: !stream || stream->demuxer == demuxer
     struct sh_stream *stream;

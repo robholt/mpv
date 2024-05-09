@@ -27,11 +27,11 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <limits.h>
+#include <unistd.h>
 
 #include "mpv_talloc.h"
 
 #include "config.h"
-#include "common/common.h"
 #include "misc/random.h"
 #include "osdep/io.h"
 #include "osdep/terminal.h"
@@ -62,7 +62,7 @@ bool mp_set_cloexec(int fd)
     return true;
 }
 
-#ifdef _WIN32
+#ifdef __MINGW32__
 int mp_make_cloexec_pipe(int pipes[2])
 {
     pipes[0] = pipes[1] = -1;
@@ -82,7 +82,7 @@ int mp_make_cloexec_pipe(int pipes[2])
 }
 #endif
 
-#ifdef _WIN32
+#ifdef __MINGW32__
 int mp_make_wakeup_pipe(int pipes[2])
 {
     return mp_make_cloexec_pipe(pipes);
@@ -104,7 +104,7 @@ int mp_make_wakeup_pipe(int pipes[2])
 
 void mp_flush_wakeup_pipe(int pipe_end)
 {
-#ifndef _WIN32
+#ifndef __MINGW32__
     char buf[100];
     (void)read(pipe_end, buf, sizeof(buf));
 #endif
@@ -142,7 +142,7 @@ char *mp_to_utf8(void *talloc_ctx, const wchar_t *s)
 
 #endif // _WIN32
 
-#ifdef _WIN32
+#ifdef __MINGW32__
 
 #include <io.h>
 #include <fcntl.h>
@@ -309,26 +309,18 @@ static inline HANDLE get_handle(FILE *stream)
     return wstream;
 }
 
-size_t mp_fwrite(const void *restrict buffer, size_t size, size_t count,
-                 FILE *restrict stream)
+int mp_fputs(const char *str, FILE *stream)
 {
-    if (!size || !count)
-        return 0;
-
     HANDLE wstream = get_handle(stream);
-    if (mp_check_console(wstream)) {
-        unsigned char *start = (unsigned char *)buffer;
-        size_t c = 0;
-        for (; c < count; ++c) {
-            if (mp_console_write(wstream, (bstr){start, size}) <= 0)
-                break;
-            start += size;
-        }
-        return c;
-    }
+    if (mp_check_console(wstream))
+        return mp_console_fputs(wstream, bstr0(str));
 
-#undef fwrite
-    return fwrite(buffer, size, count, stream);
+    return fputs(str, stream);
+}
+
+int mp_puts(const char *str)
+{
+    return mp_fputs(str, stdout);
 }
 
 #if HAVE_UWP

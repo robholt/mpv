@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "mpv_talloc.h"
 
@@ -194,7 +195,8 @@ int mp_msg_level(struct mp_log *log)
 
 static inline int term_msg_fileno(struct mp_log_root *root, int lev)
 {
-    return root->force_stderr ? STDERR_FILENO : STDOUT_FILENO;
+    return (root->force_stderr || lev == MSGL_STATUS || lev == MSGL_FATAL ||
+            lev == MSGL_ERR || lev == MSGL_WARN) ? STDERR_FILENO : STDOUT_FILENO;
 }
 
 // Reposition cursor and clear lines for outputting the status line. In certain
@@ -214,9 +216,9 @@ static void prepare_prefix(struct mp_log_root *root, bstr *out, int lev, int ter
 
     // Set cursor state
     if (new_lines && !root->status_lines) {
-        bstr_xappend(root, out, bstr0(TERM_ESC_HIDE_CURSOR));
+        bstr_xappend(root, out, bstr0("\033[?25l"));
     } else if (!new_lines && root->status_lines) {
-        bstr_xappend(root, out, bstr0(TERM_ESC_RESTORE_CURSOR));
+        bstr_xappend(root, out, bstr0("\033[?25h"));
     }
 
     int line_skip = 0;
@@ -496,9 +498,9 @@ static void write_term_msg(struct mp_log *log, int lev, bstr text, bstr *out)
         write_msg_to_buffers(log, lev, line);
     }
 
-    if (lev == MSGL_STATUS) {
+    if (lev == MSGL_STATUS && print_term) {
         int line_w = 0;
-        if (str.len && print_term)
+        if (str.len)
             append_terminal_line(log, lev, str, &root->term_msg_tmp, &line_w);
         term_msg_lines += !term_w ? (str.len ? 1 : 0)
                                   : (line_w + term_w - 1) / term_w;
@@ -561,9 +563,12 @@ void mp_msg_va(struct mp_log *log, int lev, const char *format, va_list va)
         int fileno = term_msg_fileno(root, lev);
         FILE *stream = fileno == STDERR_FILENO ? stderr : stdout;
         if (root->term_msg.len) {
-            fwrite(root->term_msg.start, root->term_msg.len, 1, stream);
-            if (root->term_status_msg.len)
-                fwrite(root->term_status_msg.start, root->term_status_msg.len, 1, stream);
+            if (root->term_status_msg.len) {
+                fprintf(stream, "%.*s%.*s", BSTR_P(root->term_msg),
+                        BSTR_P(root->term_status_msg));
+            } else {
+                fprintf(stream, "%.*s", BSTR_P(root->term_msg));
+            }
             fflush(stream);
         }
     }

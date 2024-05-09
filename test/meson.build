@@ -1,7 +1,7 @@
 # So we don't have to reorganize the entire directory tree.
 incdir = include_directories('../')
 outdir = join_paths(build_root, 'test', 'out')
-refdir = ''
+refdir = join_paths(source_root, 'test', 'ref')
 
 # Convenient testing libraries. An adhoc collection of
 # mpv objects that test_utils.c needs. Paths and subprocesses
@@ -15,7 +15,6 @@ test_utils_files = [
     'common/common.c',
     'misc/bstr.c',
     'misc/dispatch.c',
-    'misc/io_utils.c',
     'misc/json.c',
     'misc/node.c',
     'misc/path_utils.c',
@@ -54,9 +53,6 @@ endif
 if features['win32-desktop']
     test_utils_deps += cc.find_library('imm32')
     test_utils_deps += cc.find_library('ntdll')
-    if features['pathcch']
-        test_utils_deps += cc.find_library('pathcch')
-    endif
 endif
 test_utils_objects = libmpv.extract_objects(test_utils_files)
 test_utils = static_library('test-utils', 'test_utils.c', include_directories: incdir,
@@ -119,25 +115,16 @@ paths = executable('paths', 'paths.c', include_directories: incdir,
 test('paths', paths)
 
 if get_option('libmpv')
-    exe = executable('libmpv-test', 'libmpv_test.c',
-                     include_directories: incdir, link_with: libmpv)
+    libmpv_test = executable('libmpv-test', 'libmpv_test.c',
+                             include_directories: incdir, link_with: libmpv)
     file = join_paths(source_root, 'etc', 'mpv-icon-8bit-16x16.png')
-    test('libmpv', exe, args: file, timeout: 60, should_fail: not features['lua'])
-
-    exe = executable('libmpv-encode', 'libmpv_encode.c',
-                     include_directories: incdir, link_with: [libmpv, test_utils])
-    test('libmpv-encode', exe, timeout: 30)
+    test('libmpv', libmpv_test, args: file, timeout: 60)
 endif
 
-# Supported libavutil versions that work with these tests.
+# Minimum required libavutil version that works with these tests.
 # Will need to be manually updated when ffmpeg adds/removes more formats in the future.
-if libavutil.version().version_compare('>= 59.0.100')
-    refdir = join_paths(source_root, 'test', 'ref', 'ffmpeg7')
-elif libavutil.version().version_compare('>= 58.27.100')
-    refdir = join_paths(source_root, 'test', 'ref', 'ffmpeg6')
-endif
+if libavutil.version().version_compare('>= 58.27.100')
 
-if refdir != ''
 # The CI can randomly fail if libavutil isn't explicitly linked again here.
     img_format = executable('img-format', 'img_format.c', include_directories: incdir,
                             dependencies: [libavutil, libplacebo], link_with: [img_utils, test_utils])

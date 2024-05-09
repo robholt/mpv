@@ -21,12 +21,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-
-#ifdef _WIN32
-#include <sys/utime.h>
-#else
+#include <unistd.h>
 #include <utime.h>
-#endif
 
 #include <libavutil/md5.h>
 
@@ -213,16 +209,20 @@ static char *mp_get_playback_resume_config_filename(struct MPContext *mpctx,
     struct MPOpts *opts = mpctx->opts;
     char *res = NULL;
     void *tmp = talloc_new(NULL);
-    const char *path = NULL;
-    if (opts->ignore_path_in_watch_later_config && !mp_is_url(bstr0(path))) {
-        path = mp_basename(fname);
-    } else {
-        path = mp_normalize_path(tmp, fname);
-        if (!path)
-            goto exit;
+    const char *realpath = fname;
+    bstr bfname = bstr0(fname);
+    if (!mp_is_url(bfname)) {
+        if (opts->ignore_path_in_watch_later_config) {
+            realpath = mp_basename(fname);
+        } else {
+            char *cwd = mp_getcwd(tmp);
+            if (!cwd)
+                goto exit;
+            realpath = mp_path_join(tmp, cwd, fname);
+        }
     }
     uint8_t md5[16];
-    av_md5_sum(md5, path, strlen(path));
+    av_md5_sum(md5, realpath, strlen(realpath));
     char *conf = talloc_strdup(tmp, "");
     for (int i = 0; i < 16; i++)
         conf = talloc_asprintf_append(conf, "%02X", md5[i]);
@@ -312,8 +312,6 @@ void mp_write_watch_later_conf(struct MPContext *mpctx)
         goto exit;
 
     char *path = mp_normalize_path(ctx, cur->filename);
-    if (!path)
-        goto exit;
 
     struct demuxer *demux = mpctx->demuxer;
 
@@ -393,19 +391,26 @@ exit:
 
 void mp_delete_watch_later_conf(struct MPContext *mpctx, const char *file)
 {
-    void *ctx = talloc_new(NULL);
-    char *path = mp_normalize_path(ctx, file ? file : mpctx->filename);
-    if (!path)
-        goto exit;
+    if (!file) {
+        struct playlist_entry *cur = mpctx->playing;
+        if (!cur)
+            return;
+        file = cur->filename;
+        if (!file)
+            return;
+    }
 
-    char *fname = mp_get_playback_resume_config_filename(mpctx, path);
+    char *fname = mp_get_playback_resume_config_filename(mpctx, file);
     if (fname) {
         unlink(fname);
         talloc_free(fname);
     }
 
-    if (mp_is_url(bstr0(path)) || mpctx->opts->ignore_path_in_watch_later_config)
-        goto exit;
+    if (mp_is_url(bstr0(file)) || mpctx->opts->ignore_path_in_watch_later_config)
+        return;
+
+    void *ctx = talloc_new(NULL);
+    char *path = mp_normalize_path(ctx, file);
 
     bstr dir = mp_dirname(path);
     while (dir.len > 1 && dir.len < strlen(path)) {
@@ -419,7 +424,6 @@ void mp_delete_watch_later_conf(struct MPContext *mpctx, const char *file)
         dir = mp_dirname(path);
     }
 
-exit:
     talloc_free(ctx);
 }
 

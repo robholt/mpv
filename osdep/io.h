@@ -95,21 +95,19 @@ char *mp_to_utf8(void *talloc_ctx, const wchar_t *s);
 
 #endif
 
-#if defined(_WIN32) && !defined(__MINGW32__)
+#ifdef __CYGWIN__
 #include <io.h>
-#include "dirent-win.h"
-#else
-#include <dirent.h>
 #endif
 
-#ifdef _WIN32
+#ifdef __MINGW32__
 
 #include <stdio.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 
-size_t mp_fwrite(const void *restrict buffer, size_t size, size_t count,
-                 FILE *restrict stream);
+int mp_puts(const char *str);
+int mp_fputs(const char *str, FILE *stream);
 int mp_printf(const char *format, ...) PRINTF_ATTRIBUTE(1, 2);
 int mp_fprintf(FILE *stream, const char *format, ...) PRINTF_ATTRIBUTE(2, 3);
 int mp_open(const char *filename, int oflag, ...);
@@ -178,7 +176,8 @@ int mp_glob(const char *restrict pattern, int flags,
             int (*errfunc)(const char*, int), mp_glob_t *restrict pglob);
 void mp_globfree(mp_glob_t *pglob);
 
-#define fwrite(...) mp_fwrite(__VA_ARGS__)
+#define puts(...) mp_puts(__VA_ARGS__)
+#define fputs(...) mp_fputs(__VA_ARGS__)
 #define printf(...) mp_printf(__VA_ARGS__)
 #define fprintf(...) mp_fprintf(__VA_ARGS__)
 #define open(...) mp_open(__VA_ARGS__)

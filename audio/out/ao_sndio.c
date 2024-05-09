@@ -303,7 +303,7 @@ static void get_state(struct ao *ao, struct mp_pcm_state *state)
                 state->free_samples, state->queued_samples, state->delay);
         p->playing = false;
         state->playing = p->playing;
-        ao_wakeup(ao);
+        ao_wakeup_playthread(ao);
     } else {
         state->playing = p->playing;
     }

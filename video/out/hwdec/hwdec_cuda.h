@@ -50,13 +50,10 @@ struct cuda_mapper_priv {
     void *ext[4];
 };
 
-struct cuda_interop_fn {
-    bool (*check)(const struct ra_hwdec *hw);
-    bool (*init)(const struct ra_hwdec *hw);
-};
+typedef bool (*cuda_interop_init)(const struct ra_hwdec *hw);
 
-extern struct cuda_interop_fn cuda_gl_fn;
+bool cuda_gl_init(const struct ra_hwdec *hw);
 
-extern struct cuda_interop_fn cuda_vk_fn;
+bool cuda_vk_init(const struct ra_hwdec *hw);
 
 int check_cu(const struct ra_hwdec *hw, CUresult err, const char *func);

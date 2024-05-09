@@ -25,6 +25,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include <sys/ioctl.h>
 #include <sys/soundcard.h>
@@ -327,7 +328,7 @@ static bool audio_write(struct ao *ao, void **data, int samples)
 
     while ((rc = write(p->dsp_fd, data[0], size)) == -1) {
         if (errno == EINTR)
-            continue;
+			continue;
         MP_WARN(ao, "audio_write: write() fail, err = %i: %s.\n",
             errno, mp_strerror(errno));
         return false;

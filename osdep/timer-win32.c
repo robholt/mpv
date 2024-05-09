@@ -18,6 +18,7 @@
 #include <windows.h>
 #include <winternl.h>
 #include <ntstatus.h>
+#include <sys/time.h>
 #include <mmsystem.h>
 #include <stdlib.h>
 #include <versionhelpers.h>

@@ -24,7 +24,9 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/types.h>
+#include <dirent.h>
 #include <inttypes.h>
 
 #include "stream/stream.h"

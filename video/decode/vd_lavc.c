@@ -1215,8 +1215,6 @@ static int decode_frame(struct mp_filter *vd)
         return ret;
     }
 
-    mp_codec_info_from_av(avctx, ctx->codec);
-
     // If something was decoded successfully, it must return a frame with valid
     // data.
     assert(ctx->pic->buf[0]);
@@ -1371,14 +1369,14 @@ static int control(struct mp_filter *vd, enum dec_ctrl cmd, void *arg)
     return CONTROL_UNKNOWN;
 }
 
-static void vd_lavc_process(struct mp_filter *vd)
+static void process(struct mp_filter *vd)
 {
     vd_ffmpeg_ctx *ctx = vd->priv;
 
     lavc_process(vd, &ctx->state, send_packet, receive_frame);
 }
 
-static void vd_lavc_reset(struct mp_filter *vd)
+static void reset(struct mp_filter *vd)
 {
     vd_ffmpeg_ctx *ctx = vd->priv;
 
@@ -1388,7 +1386,7 @@ static void vd_lavc_reset(struct mp_filter *vd)
     ctx->framedrop_flags = 0;
 }
 
-static void vd_lavc_destroy(struct mp_filter *vd)
+static void destroy(struct mp_filter *vd)
 {
     vd_ffmpeg_ctx *ctx = vd->priv;
 
@@ -1400,9 +1398,9 @@ static void vd_lavc_destroy(struct mp_filter *vd)
 static const struct mp_filter_info vd_lavc_filter = {
     .name = "vd_lavc",
     .priv_size = sizeof(vd_ffmpeg_ctx),
-    .process = vd_lavc_process,
-    .reset = vd_lavc_reset,
-    .destroy = vd_lavc_destroy,
+    .process = process,
+    .reset = reset,
+    .destroy = destroy,
 };
 
 static struct mp_decoder *create(struct mp_filter *parent,
@@ -1445,9 +1443,6 @@ static struct mp_decoder *create(struct mp_filter *parent,
         talloc_free(vd);
         return NULL;
     }
-
-    codec->codec_desc = ctx->avctx->codec_descriptor->long_name;
-
     return &ctx->public;
 }
 

@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <limits.h>
 
+#include <strings.h>
 #include <assert.h>
 
 #include "osdep/io.h"

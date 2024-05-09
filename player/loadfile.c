@@ -17,6 +17,7 @@
 
 #include <stddef.h>
 #include <stdbool.h>
+#include <strings.h>
 #include <inttypes.h>
 #include <assert.h>
 
@@ -277,8 +278,6 @@ static void print_stream(struct MPContext *mpctx, struct track *t)
         APPEND(b, " '%s'", t->title);
     const char *codec = s ? s->codec->codec : NULL;
     APPEND(b, " (%s", codec ? codec : "<unknown>");
-    if (s && s->codec->codec_profile)
-        APPEND(b, " [%s]", s->codec->codec_profile);
     if (t->type == STREAM_VIDEO) {
         if (s && s->codec->disp_w)
             APPEND(b, " %dx%d", s->codec->disp_w, s->codec->disp_h);
@@ -510,10 +509,10 @@ static bool compare_track(struct track *t1, struct track *t2, char **langs, bool
         return l1 > l2;
     if (forced)
         return t1->forced_track;
-    if (t1->default_track != t2->default_track && !t2->forced_select)
-        return t1->default_track;
     if (sub && !t2->forced_select && t2->forced_track)
         return !t1->forced_track;
+    if (t1->default_track != t2->default_track && !t2->forced_select)
+        return t1->default_track;
     if (os_langs && l1 != l2)
         return l1 > l2;
     if (t1->attached_picture != t2->attached_picture)

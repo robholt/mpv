@@ -646,22 +646,6 @@ mp.options = { read_options: read_options };
 /**********************************************************************
 *  input
 *********************************************************************/
-function register_event_handler(t) {
-    mp.register_script_message("input-event", function (type, text, cursor_position) {
-        if (t[type]) {
-            var result = t[type](text, cursor_position);
-
-            if (type == "complete" && result) {
-                mp.commandv("script-message-to", "console", "complete",
-                            JSON.stringify(result[0]), result[1]);
-            }
-        }
-
-        if (type == "closed")
-            mp.unregister_script_message("input-event");
-    })
-}
-
 mp.input = {
     get: function(t) {
         mp.commandv("script-message-to", "console", "get-input", mp.script_name,
@@ -672,17 +656,22 @@ mp.input = {
                         id: t.id,
                     }));
 
-        register_event_handler(t)
-    },
-    select: function (t) {
-        mp.commandv("script-message-to", "console", "get-input", mp.script_name,
-                    JSON.stringify({
-                        prompt: t.prompt,
-                        items: t.items,
-                        default_item: t.default_item,
-                    }));
+        mp.register_script_message("input-event", function (type, text, cursor_position) {
+            if (t[type]) {
+                var result = t[type](text, cursor_position);
 
-        register_event_handler(t);
+                if (type == "complete" && result) {
+                    mp.commandv("script-message-to", "console", "complete",
+                                JSON.stringify(result[0]), result[1]);
+                }
+            }
+
+            if (type == "closed") {
+                mp.unregister_script_message("input-event");
+            }
+        })
+
+        return true;
     },
     terminate: function () {
         mp.commandv("script-message-to", "console", "disable");

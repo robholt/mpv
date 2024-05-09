@@ -25,9 +25,9 @@
 
 #include "options/m_config.h"
 #include "video/out/placebo/ra_pl.h"
-#include "video/out/placebo/utils.h"
 
 #include "context.h"
+#include "utils.h"
 
 struct vulkan_opts {
     char *device; // force a specific GPU
@@ -39,30 +39,36 @@ struct vulkan_opts {
 
 static inline OPT_STRING_VALIDATE_FUNC(vk_validate_dev)
 {
+    struct bstr param = bstr0(*value);
     int ret = M_OPT_INVALID;
-    void *ta_ctx = talloc_new(NULL);
-    pl_log pllog = mppl_log_create(ta_ctx, log);
-    if (!pllog)
-        goto done;
+    VkResult res;
 
     // Create a dummy instance to validate/list the devices
-    mppl_log_set_probing(pllog, true);
-    pl_vk_inst inst = pl_vk_inst_create(pllog, pl_vk_inst_params());
-    mppl_log_set_probing(pllog, false);
-    if (!inst)
-        goto done;
+    VkInstanceCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pApplicationInfo = &(VkApplicationInfo) {
+            .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+            .apiVersion = VK_API_VERSION_1_1,
+        }
+    };
 
+    VkInstance inst;
+    VkPhysicalDevice *devices = NULL;
     uint32_t num = 0;
-    VkResult res = vkEnumeratePhysicalDevices(inst->instance, &num, NULL);
+
+    res = vkCreateInstance(&info, NULL, &inst);
     if (res != VK_SUCCESS)
         goto done;
 
-    VkPhysicalDevice *devices = talloc_array(ta_ctx, VkPhysicalDevice, num);
-    res = vkEnumeratePhysicalDevices(inst->instance, &num, devices);
+    res = vkEnumeratePhysicalDevices(inst, &num, NULL);
     if (res != VK_SUCCESS)
         goto done;
 
-    struct bstr param = bstr0(*value);
+    devices = talloc_array(NULL, VkPhysicalDevice, num);
+    res = vkEnumeratePhysicalDevices(inst, &num, devices);
+    if (res != VK_SUCCESS)
+        goto done;
+
     bool help = bstr_equals0(param, "help");
     if (help) {
         mp_info(log, "Available vulkan devices:\n");
@@ -104,9 +110,7 @@ static inline OPT_STRING_VALIDATE_FUNC(vk_validate_dev)
                BSTR_P(param));
 
 done:
-    pl_vk_inst_destroy(&inst);
-    pl_log_destroy(&pllog);
-    talloc_free(ta_ctx);
+    talloc_free(devices);
     return ret;
 }
 
@@ -173,11 +177,19 @@ void ra_vk_ctx_uninit(struct ra_ctx *ctx)
     TA_FREEP(&ctx->swapchain);
 }
 
-pl_vulkan mppl_create_vulkan(struct vulkan_opts *opts,
-                             pl_vk_inst vkinst,
-                             pl_log pllog,
-                             VkSurfaceKHR surface)
+bool ra_vk_ctx_init(struct ra_ctx *ctx, struct mpvk_ctx *vk,
+                    struct ra_vk_ctx_params params,
+                    VkPresentModeKHR preferred_mode)
 {
+    struct ra_swapchain *sw = ctx->swapchain = talloc_zero(NULL, struct ra_swapchain);
+    sw->ctx = ctx;
+    sw->fns = &vulkan_swapchain;
+
+    struct priv *p = sw->priv = talloc_zero(sw, struct priv);
+    p->vk = vk;
+    p->params = params;
+    p->opts = mp_get_config_group(p, ctx->global, &vulkan_conf);
+
     VkPhysicalDeviceFeatures2 features = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
     };
@@ -215,47 +227,30 @@ pl_vulkan mppl_create_vulkan(struct vulkan_opts *opts,
 #endif
 
     AVUUID param_uuid = { 0 };
-    bool is_uuid = opts->device &&
-                   av_uuid_parse(opts->device, param_uuid) == 0;
+    bool is_uuid = p->opts->device &&
+                   av_uuid_parse(p->opts->device, param_uuid) == 0;
 
-    assert(pllog);
-    assert(vkinst);
+    assert(vk->pllog);
+    assert(vk->vkinst);
     struct pl_vulkan_params device_params = {
-        .instance = vkinst->instance,
-        .get_proc_addr = vkinst->get_proc_addr,
-        .surface = surface,
-        .async_transfer = opts->async_transfer,
-        .async_compute = opts->async_compute,
-        .queue_count = opts->queue_count,
+        .instance = vk->vkinst->instance,
+        .get_proc_addr = vk->vkinst->get_proc_addr,
+        .surface = vk->surface,
+        .async_transfer = p->opts->async_transfer,
+        .async_compute = p->opts->async_compute,
+        .queue_count = p->opts->queue_count,
 #if HAVE_VULKAN_INTEROP
         .extra_queues = VK_QUEUE_VIDEO_DECODE_BIT_KHR,
         .opt_extensions = opt_extensions,
         .num_opt_extensions = MP_ARRAY_SIZE(opt_extensions),
 #endif
         .features = &features,
-        .device_name = is_uuid ? NULL : opts->device,
+        .device_name = is_uuid ? NULL : p->opts->device,
     };
     if (is_uuid)
         av_uuid_copy(device_params.device_uuid, param_uuid);
 
-    return pl_vulkan_create(pllog, &device_params);
-
-}
-
-bool ra_vk_ctx_init(struct ra_ctx *ctx, struct mpvk_ctx *vk,
-                    struct ra_vk_ctx_params params,
-                    VkPresentModeKHR preferred_mode)
-{
-    struct ra_swapchain *sw = ctx->swapchain = talloc_zero(NULL, struct ra_swapchain);
-    sw->ctx = ctx;
-    sw->fns = &vulkan_swapchain;
-
-    struct priv *p = sw->priv = talloc_zero(sw, struct priv);
-    p->vk = vk;
-    p->params = params;
-    p->opts = mp_get_config_group(p, ctx->global, &vulkan_conf);
-
-    vk->vulkan = mppl_create_vulkan(p->opts, vk->vkinst, vk->pllog, vk->surface);
+    vk->vulkan = pl_vulkan_create(vk->pllog, &device_params);
     if (!vk->vulkan)
         goto error;
 

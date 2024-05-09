@@ -16,6 +16,7 @@
  */
 
 #include <stdio.h>
+#include <unistd.h>
 #include <config.h>
 
 #if HAVE_POSIX
@@ -38,28 +39,17 @@
 #define ALGO_PLAIN 1
 #define ALGO_HALF_BLOCKS 2
 
+#define TERM_ESC_CLEAR_COLORS           "\033[0m"
+#define TERM_ESC_COLOR256_BG            "\033[48;5"
+#define TERM_ESC_COLOR256_FG            "\033[38;5"
+#define TERM_ESC_COLOR24BIT_BG          "\033[48;2"
+#define TERM_ESC_COLOR24BIT_FG          "\033[38;2"
+
 #define DEFAULT_WIDTH 80
 #define DEFAULT_HEIGHT 25
 
-static const bstr TERM_ESC_CLEAR_COLORS    = bstr0_lit("\033[0m");
-static const bstr TERM_ESC_COLOR256_BG     = bstr0_lit("\033[48;5");
-static const bstr TERM_ESC_COLOR256_FG     = bstr0_lit("\033[38;5");
-static const bstr TERM_ESC_COLOR24BIT_BG   = bstr0_lit("\033[48;2");
-static const bstr TERM_ESC_COLOR24BIT_FG   = bstr0_lit("\033[38;2");
-
-static const bstr UNICODE_LOWER_HALF_BLOCK = bstr0_lit("\xe2\x96\x84");
-
-#define WRITE_STR(str) fwrite((str), strlen(str), 1, stdout)
-
-enum vo_tct_buffering {
-    VO_TCT_BUFFER_PIXEL,
-    VO_TCT_BUFFER_LINE,
-    VO_TCT_BUFFER_FRAME
-};
-
 struct vo_tct_opts {
     int algo;
-    int buffering;
     int width;   // 0 -> default
     int height;  // 0 -> default
     bool term256;  // 0 -> true color
@@ -67,7 +57,7 @@ struct vo_tct_opts {
 
 struct lut_item {
     char str[4];
-    uint8_t width;
+    int width;
 };
 
 struct priv {
@@ -79,7 +69,6 @@ struct priv {
     struct mp_rect src;
     struct mp_rect dst;
     struct mp_sws_context *sws;
-    bstr frame_buf;
     struct lut_item lut[256];
 };
 
@@ -112,65 +101,69 @@ static int rgb_to_x256(uint8_t r, uint8_t g, uint8_t b)
     return color_err <= gray_err ? 16 + color_index() : 232 + gray_index;
 }
 
-static void print_seq3(bstr *frame, struct lut_item *lut, bstr prefix,
+static void print_seq3(struct lut_item *lut, const char* prefix,
                        uint8_t r, uint8_t g, uint8_t b)
 {
-    bstr_xappend(NULL, frame, prefix);
-    bstr_xappend(NULL, frame, (bstr){ lut[r].str, lut[r].width });
-    bstr_xappend(NULL, frame, (bstr){ lut[g].str, lut[g].width });
-    bstr_xappend(NULL, frame, (bstr){ lut[b].str, lut[b].width });
-    bstr_xappend(NULL, frame, (bstr)bstr0_lit("m"));
+// The fwrite implementation is about 25% faster than the printf code
+// (even if we use *.s with the lut values), however,
+// on windows we need to use printf in order to translate escape sequences and
+// UTF8 output for the console.
+#ifndef _WIN32
+    fputs(prefix, stdout);
+    fwrite(lut[r].str, lut[r].width, 1, stdout);
+    fwrite(lut[g].str, lut[g].width, 1, stdout);
+    fwrite(lut[b].str, lut[b].width, 1, stdout);
+    fputc('m', stdout);
+#else
+    printf("%s;%d;%d;%dm", prefix, (int)r, (int)g, (int)b);
+#endif
 }
 
-static void print_seq1(bstr *frame, struct lut_item *lut, bstr prefix, uint8_t c)
+static void print_seq1(struct lut_item *lut, const char* prefix, uint8_t c)
 {
-    bstr_xappend(NULL, frame, prefix);
-    bstr_xappend(NULL, frame, (bstr){ lut[c].str, lut[c].width });
-    bstr_xappend(NULL, frame, (bstr)bstr0_lit("m"));
+#ifndef _WIN32
+    fputs(prefix, stdout);
+    fwrite(lut[c].str, lut[c].width, 1, stdout);
+    fputc('m', stdout);
+#else
+    printf("%s;%dm", prefix, (int)c);
+#endif
 }
 
-static void print_buffer(bstr *frame)
-{
-    fwrite(frame->start, frame->len, 1, stdout);
-    frame->len = 0;
-}
 
-static void write_plain(bstr *frame,
+static void write_plain(
     const int dwidth, const int dheight,
     const int swidth, const int sheight,
     const unsigned char *source, const int source_stride,
-    bool term256, struct lut_item *lut, enum vo_tct_buffering buffering)
+    bool term256, struct lut_item *lut)
 {
     assert(source);
     const int tx = (dwidth - swidth) / 2;
     const int ty = (dheight - sheight) / 2;
     for (int y = 0; y < sheight; y++) {
         const unsigned char *row = source + y * source_stride;
-        bstr_xappend_asprintf(NULL, frame, TERM_ESC_GOTO_YX, ty + y, tx);
+        printf(TERM_ESC_GOTO_YX, ty + y, tx);
         for (int x = 0; x < swidth; x++) {
             unsigned char b = *row++;
             unsigned char g = *row++;
             unsigned char r = *row++;
             if (term256) {
-                print_seq1(frame, lut, TERM_ESC_COLOR256_BG, rgb_to_x256(r, g, b));
+                print_seq1(lut, TERM_ESC_COLOR256_BG, rgb_to_x256(r, g, b));
             } else {
-                print_seq3(frame, lut, TERM_ESC_COLOR24BIT_BG, r, g, b);
+                print_seq3(lut, TERM_ESC_COLOR24BIT_BG, r, g, b);
             }
-            bstr_xappend(NULL, frame, (bstr)bstr0_lit(" "));
-            if (buffering <= VO_TCT_BUFFER_PIXEL)
-                print_buffer(frame);
+            printf(" ");
         }
-        bstr_xappend(NULL, frame, TERM_ESC_CLEAR_COLORS);
-        if (buffering <= VO_TCT_BUFFER_LINE)
-            print_buffer(frame);
+        printf(TERM_ESC_CLEAR_COLORS);
     }
+    printf("\n");
 }
 
-static void write_half_blocks(bstr *frame,
+static void write_half_blocks(
     const int dwidth, const int dheight,
     const int swidth, const int sheight,
     unsigned char *source, int source_stride,
-    bool term256, struct lut_item *lut, enum vo_tct_buffering buffering)
+    bool term256, struct lut_item *lut)
 {
     assert(source);
     const int tx = (dwidth - swidth) / 2;
@@ -178,7 +171,7 @@ static void write_half_blocks(bstr *frame,
     for (int y = 0; y < sheight * 2; y += 2) {
         const unsigned char *row_up = source + y * source_stride;
         const unsigned char *row_down = source + (y + 1) * source_stride;
-        bstr_xappend_asprintf(NULL, frame, TERM_ESC_GOTO_YX, ty + y / 2, tx);
+        printf(TERM_ESC_GOTO_YX, ty + y / 2, tx);
         for (int x = 0; x < swidth; x++) {
             unsigned char b_up = *row_up++;
             unsigned char g_up = *row_up++;
@@ -187,20 +180,17 @@ static void write_half_blocks(bstr *frame,
             unsigned char g_down = *row_down++;
             unsigned char r_down = *row_down++;
             if (term256) {
-                print_seq1(frame, lut, TERM_ESC_COLOR256_BG, rgb_to_x256(r_up, g_up, b_up));
-                print_seq1(frame, lut, TERM_ESC_COLOR256_FG, rgb_to_x256(r_down, g_down, b_down));
+                print_seq1(lut, TERM_ESC_COLOR256_BG, rgb_to_x256(r_up, g_up, b_up));
+                print_seq1(lut, TERM_ESC_COLOR256_FG, rgb_to_x256(r_down, g_down, b_down));
             } else {
-                print_seq3(frame, lut, TERM_ESC_COLOR24BIT_BG, r_up, g_up, b_up);
-                print_seq3(frame, lut, TERM_ESC_COLOR24BIT_FG, r_down, g_down, b_down);
+                print_seq3(lut, TERM_ESC_COLOR24BIT_BG, r_up, g_up, b_up);
+                print_seq3(lut, TERM_ESC_COLOR24BIT_FG, r_down, g_down, b_down);
             }
-            bstr_xappend(NULL, frame, UNICODE_LOWER_HALF_BLOCK);
-            if (buffering <= VO_TCT_BUFFER_PIXEL)
-                print_buffer(frame);
+            printf("\xe2\x96\x84");  // UTF8 bytes of U+2584 (lower half block)
         }
-        bstr_xappend(NULL, frame, TERM_ESC_CLEAR_COLORS);
-        if (buffering <= VO_TCT_BUFFER_LINE)
-            print_buffer(frame);
+        printf(TERM_ESC_CLEAR_COLORS);
     }
+    printf("\n");
 }
 
 static void get_win_size(struct vo *vo, int *out_width, int *out_height) {
@@ -246,7 +236,7 @@ static int reconfig(struct vo *vo, struct mp_image_params *params)
     if (mp_sws_reinit(p->sws) < 0)
         return -1;
 
-    WRITE_STR(TERM_ESC_CLEAR_SCREEN);
+    printf(TERM_ESC_CLEAR_SCREEN);
 
     vo->want_redraw = true;
     return 0;
@@ -272,37 +262,27 @@ static void flip_page(struct vo *vo)
     if (vo->dwidth != width || vo->dheight != height)
         reconfig(vo, vo->params);
 
-    WRITE_STR(TERM_ESC_SYNC_UPDATE_BEGIN);
-
-    p->frame_buf.len = 0;
     if (p->opts.algo == ALGO_PLAIN) {
-        write_plain(&p->frame_buf,
+        write_plain(
             vo->dwidth, vo->dheight, p->swidth, p->sheight,
             p->frame->planes[0], p->frame->stride[0],
-            p->opts.term256, p->lut, p->opts.buffering);
+            p->opts.term256, p->lut);
     } else {
-        write_half_blocks(&p->frame_buf,
+        write_half_blocks(
             vo->dwidth, vo->dheight, p->swidth, p->sheight,
             p->frame->planes[0], p->frame->stride[0],
-            p->opts.term256, p->lut, p->opts.buffering);
+            p->opts.term256, p->lut);
     }
-
-    bstr_xappend(NULL, &p->frame_buf, (bstr)bstr0_lit("\n"));
-    if (p->opts.buffering <= VO_TCT_BUFFER_FRAME)
-        print_buffer(&p->frame_buf);
-
-    WRITE_STR(TERM_ESC_SYNC_UPDATE_END);
     fflush(stdout);
 }
 
 static void uninit(struct vo *vo)
 {
-    WRITE_STR(TERM_ESC_RESTORE_CURSOR);
-    terminal_set_mouse_input(false);
-    WRITE_STR(TERM_ESC_NORMAL_SCREEN);
+    printf(TERM_ESC_RESTORE_CURSOR);
+    printf(TERM_ESC_NORMAL_SCREEN);
     struct priv *p = vo->priv;
-    talloc_free(p->frame);
-    talloc_free(p->frame_buf.start);
+    if (p->frame)
+        talloc_free(p->frame);
 }
 
 static int preinit(struct vo *vo)
@@ -316,20 +296,14 @@ static int preinit(struct vo *vo)
     p->sws->log = vo->log;
     mp_sws_enable_cmdline_opts(p->sws, vo->global);
 
-    for (int i = 0; i < MP_ARRAY_SIZE(p->lut); ++i) {
-        char* out = p->lut[i].str;
-        *out++ = ';';
-        if (i >= 100)
-            *out++ = '0' + (i / 100);
-        if (i >= 10)
-            *out++ = '0' + ((i / 10) % 10);
-        *out++ = '0' + (i % 10);
-        p->lut[i].width = out - p->lut[i].str;
+    for (int i = 0; i < 256; ++i) {
+        char buff[8];
+        p->lut[i].width = snprintf(buff, sizeof(buff), ";%d", i);
+        memcpy(p->lut[i].str, buff, 4); // some strings may not end on a null byte, but that's ok.
     }
 
-    WRITE_STR(TERM_ESC_HIDE_CURSOR);
-    terminal_set_mouse_input(true);
-    WRITE_STR(TERM_ESC_ALT_SCREEN);
+    printf(TERM_ESC_HIDE_CURSOR);
+    printf(TERM_ESC_ALT_SCREEN);
 
     return 0;
 }
@@ -359,7 +333,6 @@ const struct vo_driver video_out_tct = {
     .priv_size = sizeof(struct priv),
     .priv_defaults = &(const struct priv) {
         .opts.algo = ALGO_HALF_BLOCKS,
-        .opts.buffering = VO_TCT_BUFFER_LINE,
     },
     .options = (const m_option_t[]) {
         {"algo", OPT_CHOICE(opts.algo,
@@ -368,10 +341,6 @@ const struct vo_driver video_out_tct = {
         {"width", OPT_INT(opts.width)},
         {"height", OPT_INT(opts.height)},
         {"256", OPT_BOOL(opts.term256)},
-        {"buffering", OPT_CHOICE(opts.buffering,
-            {"pixel", VO_TCT_BUFFER_PIXEL},
-            {"line", VO_TCT_BUFFER_LINE},
-            {"frame", VO_TCT_BUFFER_FRAME})},
         {0}
     },
     .options_prefix = "vo-tct",

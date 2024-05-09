@@ -312,9 +312,7 @@ features += {'dos-paths': win32, 'win32': win32}
 
 mswin_flags = ['-D_WIN32_WINNT=0x0602', '-DWINVER=0x0602', '-DUNICODE',
                '-DCOBJMACROS', '-DINITGUID', '-U__STRICT_ANSI__', '-DNOMINMAX',
-               '-D_USE_MATH_DEFINES', '-DWIN32_LEAN_AND_MEAN',
-               '-D_CRT_DECLARE_NONSTDC_NAMES', '-D_CRT_NONSTDC_NO_WARNINGS',
-               '-D_CRT_SECURE_NO_WARNINGS']
+               '-D_USE_MATH_DEFINES', '-DWIN32_LEAN_AND_MEAN']
 
 if host_machine.system() == 'windows'
     flags += [mswin_flags]
@@ -381,15 +379,6 @@ pthread_debug = get_option('pthread-debug').require(
 )
 features += {'pthread-debug': pthread_debug.allowed()}
 
-if get_option('fuzzers')
-    if get_option('cplayer') or not get_option('libmpv')
-        error('fuzzers require !cplayer and libmpv')
-    endif
-    # Adding flags manually until https://github.com/mesonbuild/meson/pull/9825
-    flags += ['-fsanitize=address,undefined,fuzzer', '-fno-omit-frame-pointer']
-    link_flags += ['-fsanitize=address,undefined,fuzzer', '-fno-omit-frame-pointer']
-endif
-
 add_project_arguments(flags, language: 'c')
 add_project_arguments(['-Wno-unused-parameter'], language: 'objc')
 add_project_link_arguments(link_flags, language: ['c', 'objc'])
@@ -437,9 +426,6 @@ endif
 
 features += {'ppoll': cc.has_function('ppoll', args: '-D_GNU_SOURCE',
                                       prefix: '#include <poll.h>')}
-
-features += {'seek-data': cc.has_header_symbol('errno.h', 'ENXIO') and
-    cc.has_header_symbol('unistd.h', 'SEEK_DATA', args: '-D_GNU_SOURCE')}
 
 cd_devices = {
     'windows': 'D:',
@@ -500,11 +486,6 @@ endif
 
 features += {'win32-desktop': win32 and not uwp.found()}
 if features['win32-desktop']
-    pathcch = cc.find_library('pathcch', required: false)
-    features += {'pathcch': pathcch.found()}
-    if features['pathcch']
-        dependencies += pathcch
-    endif
     win32_desktop_libs = [cc.find_library('avrt'),
                           cc.find_library('dwmapi'),
                           cc.find_library('gdi32'),
@@ -522,8 +503,7 @@ if features['win32-desktop']
                      'osdep/terminal-win.c',
                      'video/out/w32_common.c',
                      'video/out/win32/displayconfig.c',
-                     'video/out/win32/droptarget.c',
-                     'video/out/win32/menu.c')
+                     'video/out/win32/droptarget.c')
     main_fn_source = files('osdep/main-fn-win.c')
 endif
 
@@ -847,11 +827,8 @@ endif
 
 if features['audiounit'] or features['coreaudio'] or features['avfoundation']
     sources += files('audio/out/ao_coreaudio_chmap.c',
-                     'audio/out/ao_coreaudio_utils.c')
-endif
-
-if features['avfoundation']
-    sources += files('audio/out/ao_coreaudio_properties.c')
+                     'audio/out/ao_coreaudio_utils.c',
+                     'audio/out/ao_coreaudio_properties.c')
 endif
 
 jack_opt = get_option('jack').require(
@@ -1025,8 +1002,6 @@ features += {'d3d11': d3d11.allowed()}
 if features['d3d11']
     sources += files('video/out/d3d11/context.c',
                      'video/out/d3d11/ra_d3d11.c')
-    features += {'dxgi-debug-d3d11': cc.has_header_symbol('d3d11sdklayers.h', 'DXGI_DEBUG_D3D11')}
-    features += {'dxgi-debug': cc.has_header_symbol('dxgidebug.h', 'IID_IDXGIInfoQueue')}
 endif
 
 wayland = {
@@ -1277,7 +1252,7 @@ if features['egl'] or features['egl-android'] or features['egl-angle-win32']
 endif
 
 if features['gl'] and features['egl']
-    sources += files('video/filter/vf_gpu_egl.c')
+    sources += files('video/filter/vf_gpu.c')
 endif
 
 if features['gl']
@@ -1302,8 +1277,7 @@ features += {'vulkan': vulkan.found()}
 if features['vulkan']
     dependencies += vulkan
     sources += files('video/out/vulkan/context.c',
-                     'video/out/vulkan/utils.c',
-                     'video/filter/vf_gpu_vulkan.c')
+                     'video/out/vulkan/utils.c')
 endif
 
 if features['vulkan'] and features['android']
@@ -1326,10 +1300,6 @@ features += {'vk-khr-display': cc.has_function('vkCreateDisplayPlaneSurfaceKHR',
                                                dependencies: [vulkan])}
 if features['vk-khr-display']
     sources += files('video/out/vulkan/context_display.c')
-endif
-
-if features['vulkan'] or (features['gl'] and features['egl'])
-    sources += files('video/filter/vf_gpu.c')
 endif
 
 
@@ -1579,7 +1549,6 @@ if features['cocoa'] and features['swift']
                            'osdep/mac/menu_bar.swift',
                            'osdep/mac/option_helper.swift',
                            'osdep/mac/precise_timer.swift',
-                           'osdep/mac/presentation.swift',
                            'osdep/mac/swift_compat.swift',
                            'osdep/mac/swift_extensions.swift',
                            'osdep/mac/type_helper.swift',
@@ -1588,18 +1557,6 @@ if features['cocoa'] and features['swift']
                            'video/out/mac/view.swift',
                            'video/out/mac/window.swift')
 endif
-
-macos_11_features = get_option('macos-11-features').require(
-    macos_sdk_version.version_compare('>= 11'),
-    error_message: 'A macos sdk version >= 11 could not be found!',
-)
-features += {'macos-11-features': macos_11_features.allowed()}
-
-macos_12_features = get_option('macos-12-features').require(
-    macos_sdk_version.version_compare('>= 12'),
-    error_message: 'A macos sdk version >= 12 could not be found!',
-)
-features += {'macos-12-features': macos_12_features.allowed()}
 
 macos_cocoa_cb = get_option('macos-cocoa-cb').require(
     features['cocoa'] and features['gl-cocoa'] and features['swift'],
@@ -1821,7 +1778,7 @@ if get_option('cplayer')
     install_data('etc/mpv-symbolic.svg', install_dir: join_paths(hicolor_dir, 'symbolic', 'apps'))
 
     mpv = executable('mpv', main_fn_source, objects: libmpv.extract_all_objects(recursive: true), dependencies: dependencies,
-                     win_subsystem: 'windows', install: true)
+                     win_subsystem: 'windows,6.0', install: true)
 
     # Older meson versions generate this in the player subdirectory.
     if win32 and meson.version().version_compare('>= 1.3.0')
@@ -1841,10 +1798,6 @@ endif
 
 if get_option('tests')
     subdir('test')
-endif
-
-if get_option('fuzzers')
-    subdir('fuzzers')
 endif
 
 summary({'d3d11': features['d3d11'],
