@@ -17,11 +17,8 @@
 
 #include <assert.h>
 #include <string.h>
-#include <strings.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <unistd.h>
-#include <dirent.h>
 #include <math.h>
 
 #include <lua.h>
@@ -60,6 +57,9 @@ static const char * const builtin_lua_scripts[][2] = {
     },
     {"mp.assdraw",
 #   include "player/lua/assdraw.lua.inc"
+    },
+    {"mp.fzy",
+#   include "player/lua/fzy.lua.inc"
     },
     {"mp.input",
 #   include "player/lua/input.lua.inc"
@@ -512,7 +512,7 @@ static int script_log(lua_State *L)
         const char *s = lua_tostring(L, -1);
         if (s == NULL)
             return luaL_error(L, "Invalid argument");
-        mp_msg(ctx->log, msgl, "%s%s", s, i > 0 ? " " : "");
+        mp_msg(ctx->log, msgl, (i == 2 ? "%s" : " %s"), s);
         lua_pop(L, 1);  // args... tostring
     }
     mp_msg(ctx->log, msgl, "\n");

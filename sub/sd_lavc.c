@@ -83,6 +83,7 @@ static int init(struct sd *sd)
     case AV_CODEC_ID_HDMV_PGS_SUBTITLE:
     case AV_CODEC_ID_XSUB:
     case AV_CODEC_ID_DVD_SUBTITLE:
+    case AV_CODEC_ID_ARIB_CAPTION:
         break;
     default:
         return -1;
@@ -92,12 +93,30 @@ static int init(struct sd *sd)
     AVCodecContext *ctx = NULL;
     const AVCodec *sub_codec = avcodec_find_decoder(cid);
     if (!sub_codec)
-        goto error;
+        goto error_probe;
     ctx = avcodec_alloc_context3(sub_codec);
     if (!ctx)
-        goto error;
+        goto error_probe;
 
     mp_set_avopts(sd->log, ctx, sd->opts->sub_avopts);
+
+    switch (cid) {
+    case AV_CODEC_ID_DVB_TELETEXT: {
+        int64_t format;
+        int ret = av_opt_get_int(ctx, "txt_format", AV_OPT_SEARCH_CHILDREN, &format);
+        // format == 0 is bitmap
+        if (!ret && format)
+            goto error_probe;
+        break;
+    }
+    case AV_CODEC_ID_ARIB_CAPTION: {
+        int64_t format;
+        int ret = av_opt_get_int(ctx, "sub_type", AV_OPT_SEARCH_CHILDREN, &format);
+        if (!ret && format != SUBTITLE_BITMAP)
+            goto error_probe;
+        break;
+    }
+    }
 
     priv->avpkt = av_packet_alloc();
     if (!priv->avpkt)
@@ -115,8 +134,9 @@ static int init(struct sd *sd)
     priv->packer = talloc_zero(priv, struct bitmap_packer);
     return 0;
 
- error:
+error:
     MP_FATAL(sd, "Could not open libavcodec subtitle decoder\n");
+error_probe:
     avcodec_free_context(&ctx);
     mp_free_av_packet(&priv->avpkt);
     talloc_free(priv);
