@@ -592,6 +592,9 @@ static void reset_pin(struct mp_pin *p)
 
 void mp_filter_reset(struct mp_filter *filter)
 {
+    if (!filter)
+        return;
+
     for (int n = 0; n < filter->in->num_children; n++)
         mp_filter_reset(filter->in->children[n]);
 
@@ -685,7 +688,8 @@ struct mp_stream_info *mp_filter_find_stream_info(struct mp_filter *f)
     return NULL;
 }
 
-struct mp_hwdec_ctx *mp_filter_load_hwdec_device(struct mp_filter *f, int imgfmt)
+struct mp_hwdec_ctx *mp_filter_load_hwdec_device(struct mp_filter *f, int imgfmt,
+                                                 enum AVHWDeviceType device_type)
 {
     struct mp_stream_info *info = mp_filter_find_stream_info(f);
     if (!info || !info->hwdec_devs)
@@ -697,7 +701,7 @@ struct mp_hwdec_ctx *mp_filter_load_hwdec_device(struct mp_filter *f, int imgfmt
     };
     hwdec_devices_request_for_img_fmt(info->hwdec_devs, &params);
 
-    return hwdec_devices_get_by_imgfmt(info->hwdec_devs, imgfmt);
+    return hwdec_devices_get_by_imgfmt_and_type(info->hwdec_devs, imgfmt, device_type);
 }
 
 static void filter_wakeup(struct mp_filter *f, bool mark_only)

@@ -247,16 +247,13 @@ Configurable Options
 
     Scale factor of the OSC when fullscreen
 
-``scaleforcedwindow``
-    Default: 2.0
-
-    Scale factor of the OSC when rendered on a forced (dummy) window
-
 ``vidscale``
-    Default: yes
+    Default: auto
 
-    Scale the OSC with the video
-    ``no`` tries to keep the OSC size constant as much as the window size allows
+    Scale the OSC with the video.
+    ``no`` tries to keep the OSC size constant as much as the window size allows.
+    ``auto`` scales the OSC with the OSD, which is scaled with the window or kept at a
+    constant size, depending on the ``--osd-scale-by-window`` option.
 
 ``valign``
     Default: 0.8
@@ -411,13 +408,6 @@ Configurable Options
     Whether to display the chapters/playlist at the OSD when left-clicking the
     next/previous OSC buttons, respectively.
 
-``playlist_media_title``
-    Default: yes
-
-    Whether to display playlist entries in media titles. If set to ``no``, file
-    names are used instead. Note that media title of a file is only available
-    once it has been loaded.
-
 ``chapter_fmt``
     Default: ``Chapter: %s``
 
@@ -482,6 +472,20 @@ Configurable Options
 
     Sets the colors of the elements that are being pressed or held down.
 
+``tick_delay``
+    Default: 1/60
+
+    Sets the minimum interval between OSC redraws in seconds. This can be
+    decreased on fast systems to make OSC rendering smoother.
+
+    Ignored if ``tick_delay_follow_display_fps`` is set to yes and the VO
+    supports the ``display-fps`` property.
+
+``tick_delay_follow_display_fps``
+    Default: no
+
+    Use display fps to calculate the interval between OSC redraws.
+
 
 Script Commands
 ~~~~~~~~~~~~~~~
@@ -495,7 +499,10 @@ in ``input.conf``, or sent by other scripts.
 
 ``osc-visibility``
     Controls visibility mode ``never`` / ``auto`` (on mouse move) / ``always``
-    and also ``cycle`` to cycle between the modes
+    and also ``cycle`` to cycle between the modes.
+
+``osc-show``
+    Triggers the OSC to show up, just as if user moved mouse.
 
 Example
 

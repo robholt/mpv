@@ -27,7 +27,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     case MPV_FORMAT_STRING:
         value_len = strnlen(data, size);
         if (!value_len || value_len == size)
-            return -1;
+            return 0;
         value_len += 1;
         break;
     case MPV_FORMAT_FLAG:
@@ -46,43 +46,70 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
     // at least two bytes for the name
     if (size < value_len + 2)
-        return -1;
+        return 0;
 
     const char *name = (const char *)data + value_len;
     size_t name_len = strnlen(name, size - value_len);
     if (!name_len || name_len != size - value_len - 1)
-        return -1;
+        return 0;
 
     mpv_handle *ctx = mpv_create();
     if (!ctx)
         exit(1);
 
+    check_error(mpv_set_option_string(ctx, "msg-level", "all=trace"));
+    check_error(mpv_set_option_string(ctx, "network-timeout", "1"));
+
 #if MPV_RUN
     check_error(mpv_set_option_string(ctx, "vo", "null"));
     check_error(mpv_set_option_string(ctx, "ao", "null"));
-    check_error(mpv_set_option_string(ctx, "ao-null-untimed", "yes"));
-    check_error(mpv_set_option_string(ctx, "untimed", "yes"));
-    check_error(mpv_set_option_string(ctx, "video-osd", "no"));
-    check_error(mpv_set_option_string(ctx, "msg-level", "all=trace"));
 
     check_error(mpv_initialize(ctx));
 #endif
 
-    const void *value = data;
-    mpv_set_property(ctx, name, MPV_FORMAT, &value);
+    int ret;
+    if (MPV_FORMAT == MPV_FORMAT_STRING) {
+        ret = mpv_set_property_string(ctx, name, (void *)data);
+    } else {
+        ret = mpv_set_property(ctx, name, MPV_FORMAT, (void *)data);
+    }
+
+    if (ret != MPV_ERROR_SUCCESS)
+        goto done;
 
 #if MPV_RUN
-    check_error(mpv_set_option_string(ctx, "audio-files", "av://lavfi:sine=d=0.1"));
+    check_error(mpv_set_option_string(ctx, "ao-null-untimed", "yes"));
+    check_error(mpv_set_option_string(ctx, "loop-file", "no"));
+    check_error(mpv_set_option_string(ctx, "loop-playlist", "no"));
+    check_error(mpv_set_option_string(ctx, "pause", "no"));
+    check_error(mpv_set_option_string(ctx, "untimed", "yes"));
+    check_error(mpv_set_option_string(ctx, "sstep", "0"));
+    check_error(mpv_set_option_string(ctx, "idle", "yes"));
+
+    mpv_node node = {
+        .format = MPV_FORMAT_NODE_ARRAY,
+        .u.list = &(mpv_node_list) {
+            .num = 1,
+            .values = &(mpv_node) {
+                .format = MPV_FORMAT_STRING,
+                .u.string = "av://lavfi:sine=d=0.1",
+            },
+        },
+    };
+    check_error(mpv_set_option(ctx, "audio-files", MPV_FORMAT_NODE, &node));
+
+    node.u.list->num = 0;
+    check_error(mpv_set_option(ctx, "cover-art-files", MPV_FORMAT_NODE, &node));
+    check_error(mpv_set_option(ctx, "external-files", MPV_FORMAT_NODE, &node));
+    check_error(mpv_set_option(ctx, "sub-files", MPV_FORMAT_NODE, &node));
+
     const char *cmd[] = {"loadfile", "av://lavfi:yuvtestsrc=d=0.1", NULL};
     check_error(mpv_command(ctx, cmd));
 
-    while (1) {
-        mpv_event *event = mpv_wait_event(ctx, 10000);
-        if (event->event_id == MPV_EVENT_IDLE)
-            break;
-    }
+    player_loop(ctx);
 #endif
 
+done:
     mpv_terminate_destroy(ctx);
 
     return 0;

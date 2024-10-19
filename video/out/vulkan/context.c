@@ -17,11 +17,7 @@
 
 #include "config.h"
 
-#if HAVE_LAVU_UUID
 #include <libavutil/uuid.h>
-#else
-#include "misc/uuid.h"
-#endif
 
 #include "options/m_config.h"
 #include "video/out/placebo/ra_pl.h"
@@ -123,7 +119,6 @@ const struct m_sub_options vulkan_conf = {
         {"vulkan-queue-count", OPT_INT(queue_count), M_RANGE(1, 8)},
         {"vulkan-async-transfer", OPT_BOOL(async_transfer)},
         {"vulkan-async-compute", OPT_BOOL(async_compute)},
-        {"vulkan-disable-events", OPT_REMOVED("Unused")},
         {0}
     },
     .size = sizeof(struct vulkan_opts),
@@ -133,6 +128,7 @@ const struct m_sub_options vulkan_conf = {
         .async_transfer = true,
         .async_compute = true,
     },
+    .change_flags = UPDATE_VO,
 };
 
 struct priv {
@@ -182,7 +178,6 @@ pl_vulkan mppl_create_vulkan(struct vulkan_opts *opts,
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
     };
 
-#if HAVE_VULKAN_INTEROP
     /*
      * Request the additional extensions and features required to make full use
      * of the ffmpeg Vulkan hwcontext and video decoding capability.
@@ -212,7 +207,6 @@ pl_vulkan mppl_create_vulkan(struct vulkan_opts *opts,
     };
 
     features.pNext = &atomic_float_feature;
-#endif
 
     AVUUID param_uuid = { 0 };
     bool is_uuid = opts->device &&
@@ -227,11 +221,9 @@ pl_vulkan mppl_create_vulkan(struct vulkan_opts *opts,
         .async_transfer = opts->async_transfer,
         .async_compute = opts->async_compute,
         .queue_count = opts->queue_count,
-#if HAVE_VULKAN_INTEROP
         .extra_queues = VK_QUEUE_VIDEO_DECODE_BIT_KHR,
         .opt_extensions = opt_extensions,
         .num_opt_extensions = MP_ARRAY_SIZE(opt_extensions),
-#endif
         .features = &features,
         .device_name = is_uuid ? NULL : opts->device,
     };
@@ -269,9 +261,6 @@ bool ra_vk_ctx_init(struct ra_ctx *ctx, struct mpvk_ctx *vk,
         .surface = vk->surface,
         .present_mode = preferred_mode,
         .swapchain_depth = ctx->vo->opts->swapchain_depth,
-        // mpv already handles resize events, so gracefully allow suboptimal
-        // swapchains to exist in order to make resizing even smoother
-        .allow_suboptimal = true,
     };
 
     if (p->opts->swap_mode >= 0) // user override

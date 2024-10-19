@@ -10,6 +10,8 @@ on:
       - 'DOCS/**'
       - 'TOOLS/lua/**'
       - '.editorconfig'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/PULL_REQUEST_TEMPLATE'
       - '.gitignore'
       - 'Copyright'
       - 'README.md'
@@ -20,6 +22,8 @@ on:
       - 'DOCS/**'
       - 'TOOLS/lua/**'
       - '.editorconfig'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/PULL_REQUEST_TEMPLATE'
       - '.gitignore'
       - 'Copyright'
       - 'README.md'
@@ -27,7 +31,7 @@ on:
 
 jobs:
   mingw:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     env:
       CCACHE_BASEDIR: ${{ github.workspace }}
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -35,7 +39,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [i686-w64-mingw32, x86_64-w64-mingw32]
+        include:
+          - target: i686-w64-mingw32
+            wine: wine32
+          - target: x86_64-w64-mingw32
+            wine: wine64
     steps:
       - uses: actions/checkout@v4
 
@@ -43,7 +51,8 @@ jobs:
         id: get_time
         run: echo "timestamp=`date +%s%N`" >> $GITHUB_OUTPUT
 
-      - uses: actions/cache@v4
+      - name: Restore cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ matrix.target }}-${{ steps.get_time.outputs.timestamp }}
@@ -53,8 +62,12 @@ jobs:
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y autoconf automake pkg-config g++-mingw-w64 gcc-multilib python3-pip ninja-build nasm wine wine32 wine64 ccache
-          sudo python3 -m pip install meson
+          sudo apt-get install -y ccache g++-mingw-w64 gcc-multilib meson nasm ninja-build pkg-config ${{ matrix.wine }}
+
+      - name: Install Meson Wraps
+        run: |
+          mkdir subprojects -p
+          meson wrap install mujs
 
       - name: Build libraries
         run: |
@@ -72,29 +85,48 @@ jobs:
       - name: Print meson log
         if: ${{ failure() && steps.build.outcome == 'failure' }}
         run: |
-          cat ./build/meson-logs/meson-log.txt
+          cat ./mingw_build/meson-logs/meson-log.txt
 
       - name: Functional test
-        id: tests
         run: |
-          cd artifact && wine64 ./mpv.com -v --no-config
+          cd artifact && wine ./mpv.com -v --no-config
         env:
           WINEDEBUG: '+loaddll'
+
+      - name: Run meson tests
+        id: tests
+        run: |
+          meson test -C mingw_build
+
+      - name: Print meson test log
+        if: ${{ failure() && steps.tests.outcome == 'failure' }}
+        run: |
+          cat ./mingw_build/meson-logs/testlog.txt
 
       - uses: actions/upload-artifact@v4
         with:
           name: mpv-${{ matrix.target }}
           path: mpv-git-*.zip
 
+      - name: Save Cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ matrix.target }}-${{ steps.get_time.outputs.timestamp }}
+
   win32:
     runs-on: windows-latest
     env:
       VS: "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise"
-      CC: "clang"
-      CXX: "clang++"
+      CC: "ccache clang"
+      CXX: "ccache clang++"
       CC_LD: "lld"
       CXX_LD: "lld"
       WINDRES: "llvm-rc"
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_DIR: "${{ github.workspace }}\\.ccache"
+      CCACHE_MAXSIZE: 500M
     steps:
       - name: Disable autocrlf
         run: |
@@ -103,6 +135,18 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      - name: Get time
+        id: get_time
+        run: |
+          "timestamp=$((Get-Date).Ticks)" >> $env:GITHUB_OUTPUT
+
+      - name: Restore cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: x86_64-windows-msvc-${{ steps.get_time.outputs.timestamp }}
+          restore-keys: x86_64-windows-msvc-
+
       # https://github.com/mesonbuild/meson/pull/11715
       - name: Install dependencies
         run: |
@@ -110,15 +154,23 @@ jobs:
           python -m pip install build wheel
           python -m build --wheel --no-isolation meson
           python -m pip install (Get-Item ./meson/dist/meson-*-py3-none-any.whl).FullName
+          choco install ccache nasm
 
       - name: Update Meson WrapDB
         run: |
           meson wrap update-db
+          # Explicitly download wraps, as nested projects may have older versions of them.
+          meson wrap install expat
+          meson wrap install harfbuzz
+          meson wrap install libpng
+          meson wrap install zlib
 
       - name: Build
         id: build
         run: |
-          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -ne 'C:\Program Files\LLVM\bin' }) -join ';'
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -ne 'C:\Program Files\LLVM\bin' -and `
+                                                             $_ -ne 'C:\Strawberry\c\bin' }) -join ';'
+          $env:PATH += ';C:\Program Files\NASM'
           Import-Module "$env:VS\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $env:VS -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
           ./ci/build-win32.ps1
@@ -131,6 +183,8 @@ jobs:
       - name: Run meson tests
         id: tests
         run: |
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -ne 'C:\Program Files\LLVM\bin' -and `
+                                                             $_ -ne 'C:\Strawberry\c\bin' }) -join ';'
           Import-Module "$env:VS\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $env:VS -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
           meson test -C build mpv:
@@ -145,7 +199,15 @@ jobs:
           name: mpv-x86_64-windows-msvc
           path: |
             build/mpv.???
+            build/vulkan-*.dll
             !build/mpv.lib
+
+      - name: Save Cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: x86_64-windows-msvc-${{ steps.get_time.outputs.timestamp }}
 
   macos:
     runs-on: ${{ matrix.os }}
@@ -183,7 +245,7 @@ jobs:
       - name: Install dependencies
         run: |
           brew update
-          brew install autoconf automake pkg-config libtool python freetype fribidi little-cms2 \
+          brew install -q autoconf automake pkg-config libtool python freetype fribidi little-cms2 \
             luajit libass ffmpeg meson uchardet mujs libplacebo molten-vk vulkan-loader vulkan-headers
 
       - name: Build with meson
@@ -221,12 +283,13 @@ jobs:
           path: mpv.tar.gz
 
   linux:
-    runs-on: "ubuntu-22.04"
+    runs-on: ubuntu-latest
     container:
       image: "registry.opensuse.org/home/mia/images/images/mpv-ci:stable-deps"
       env:
         CC: "${{ matrix.config.cc }}"
         CXX: "${{ matrix.config.cxx }}"
+        ASAN_OPTIONS: "halt_on_error=1:abort_on_error=1:print_summary=1:detect_leaks=0"
     strategy:
       matrix:
         config:
@@ -267,7 +330,7 @@ jobs:
           cat ./build/meson-logs/testlog.txt
 
   linux-fuzz:
-    runs-on: "ubuntu-latest"
+    runs-on: ubuntu-latest
     container:
       image: "registry.opensuse.org/home/mia/images/images/mpv-ci:stable-deps"
       env:
@@ -283,20 +346,20 @@ jobs:
             --werror        \
             -Dc_args="-Wno-error=deprecated -Wno-error=deprecated-declarations" \
             -Dfuzzers=true -Dlibmpv=true -Dcplayer=false
-          meson compile -C build
+          meson compile -C build fuzzers
 
       - name: Print meson log
         if: ${{ failure() && steps.build.outcome == 'failure' }}
         run: |
           cat ./build/meson-logs/meson-log.txt
 
-  linux-ffmpeg-4-4:
-    runs-on: ubuntu-22.04
+  linux-ffmpeg-6-1:
+    runs-on: ubuntu-latest
     container:
-      # We want to test ffmpeg 4.4 which alpine 3.15 has exactly.
+      # We want to test ffmpeg 6.1.1 which alpine 3.19 has exactly.
       # Furthermore, this is a very minimal build of mpv without commonly
       # used features to test build compatibility. Musl is a nice bonus as well
-      image: alpine:3.15
+      image: alpine:3.19
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
@@ -317,10 +380,9 @@ jobs:
               libxrandr-dev \
               libxpresent-dev \
               libxscrnsaver-dev \
+              meson \
               musl-dev \
-              py3-pip \
               samurai
-              pip install meson
 
       - name: Build with meson
         id: build
@@ -348,10 +410,10 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Test in OpenBSD VM
-      uses: cross-platform-actions/action@v0.23.0
+      uses: cross-platform-actions/action@v0.25.0
       with:
         operating_system: openbsd
-        version: '7.4'
+        version: '7.5'
         run: |
             sudo pkg_add -U \
                 cmake \
@@ -363,6 +425,7 @@ jobs:
                 libcdio-paranoia \
                 libdvdnav \
                 libiconv \
+                libplacebo \
                 libv4l \
                 libxkbcommon \
                 luajit \
@@ -389,10 +452,10 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Test in FreeBSD VM
-      uses: cross-platform-actions/action@v0.23.0
+      uses: cross-platform-actions/action@v0.25.0
       with:
         operating_system: freebsd
-        version: '14.0'
+        version: '14.1'
         run: |
             sudo pkg update
             sudo pkg install -y \
@@ -438,7 +501,9 @@ jobs:
       fail-fast: false
       matrix:
         sys:
+          - clang32
           - clang64
+          - mingw32
           - mingw64
           - ucrt64
     defaults:
@@ -457,15 +522,12 @@ jobs:
           update: true
           install: git
           pacboy: >-
-            angleproject:p
             ca-certificates:p
             cc:p
-            diffutils:p
             ffmpeg:p
             lcms2:p
             libarchive:p
             libass:p
-            libcdio-paranoia:p
             libdvdnav:p
             libjpeg-turbo:p
             libplacebo:p
@@ -474,18 +536,22 @@ jobs:
             ninja:p
             pkgconf:p
             python:p
-            rst2pdf:p
-            rubberband:p
             shaderc:p
             spirv-cross:p
-            uchardet:p
-            vapoursynth:p
             vulkan-devel:p
+
+      - name: Install dependencies
+        if: ${{ matrix.sys != 'clang32' && matrix.sys != 'mingw32' }}
+        run: |
+          pacboy --noconfirm -S angleproject cppwinrt libcdio-paranoia rst2pdf \
+                                rubberband uchardet vapoursynth
 
       - name: Build with meson
         id: build
         run: |
           ./ci/build-msys2.sh meson
+        env:
+          SYS: ${{ matrix.sys }}
 
       - name: Print meson log
         if: ${{ failure() && steps.build.outcome == 'failure' }}

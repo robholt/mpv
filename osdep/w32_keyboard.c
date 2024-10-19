@@ -57,6 +57,10 @@ static const struct keymap vk_map[] = {
     {VK_F19, MP_KEY_F+19}, {VK_F20, MP_KEY_F+20}, {VK_F21, MP_KEY_F+21},
     {VK_F22, MP_KEY_F+22}, {VK_F23, MP_KEY_F+23}, {VK_F24, MP_KEY_F+24},
 
+    // numpad independent of numlock
+    {VK_SUBTRACT, MP_KEY_KPSUBTRACT}, {VK_ADD, MP_KEY_KPADD},
+    {VK_MULTIPLY, MP_KEY_KPMULTIPLY}, {VK_DIVIDE, MP_KEY_KPDIVIDE},
+
     // numpad with numlock
     {VK_NUMPAD0, MP_KEY_KP0}, {VK_NUMPAD1, MP_KEY_KP1},
     {VK_NUMPAD2, MP_KEY_KP2}, {VK_NUMPAD3, MP_KEY_KP3},
@@ -67,7 +71,7 @@ static const struct keymap vk_map[] = {
 
     // numpad without numlock
     {VK_INSERT, MP_KEY_KPINS}, {VK_END, MP_KEY_KPEND}, {VK_DOWN, MP_KEY_KPDOWN},
-    {VK_NEXT, MP_KEY_KPPGDOWN}, {VK_LEFT, MP_KEY_KPLEFT}, {VK_CLEAR, MP_KEY_KP5},
+    {VK_NEXT, MP_KEY_KPPGDOWN}, {VK_LEFT, MP_KEY_KPLEFT}, {VK_CLEAR, MP_KEY_KPBEGIN},
     {VK_RIGHT, MP_KEY_KPRIGHT}, {VK_HOME, MP_KEY_KPHOME}, {VK_UP, MP_KEY_KPUP},
     {VK_PRIOR, MP_KEY_KPPGUP}, {VK_DELETE, MP_KEY_KPDEL},
 

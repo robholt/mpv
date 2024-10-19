@@ -54,6 +54,7 @@ static void update_speed_filters(struct MPContext *mpctx)
     if (!ao_c)
         return;
 
+    double pitch = mpctx->opts->playback_pitch;
     double speed = mpctx->opts->playback_speed;
     double resample = mpctx->speed_factor_a;
     double drop = 1.0;
@@ -63,17 +64,22 @@ static void update_speed_filters(struct MPContext *mpctx)
         speed = 1.0;
     }
 
-    if (mpctx->display_sync_active) {
-        switch (mpctx->video_out->opts->video_sync) {
-            case VS_DISP_ADROP:
-                drop *= speed * resample;
-                resample = speed = 1.0;
-                break;
-            case VS_DISP_TEMPO:
-                speed = mpctx->audio_speed;
-                resample = 1.0;
-                break;
-        }
+    int video_sync = mpctx->display_sync_active ?
+        mpctx->video_out->opts->video_sync : VS_NONE;
+    switch (video_sync) {
+        case VS_DISP_ADROP:
+            drop *= speed * resample / pitch;
+            resample = pitch;
+            speed = 1.0;
+            break;
+        case VS_DISP_TEMPO:
+            speed = mpctx->audio_speed / pitch;
+            resample = pitch;
+            break;
+        default:
+            resample *= pitch;
+            speed /= pitch;
+            break;
     }
 
     mp_output_chain_set_audio_speed(ao_c->filter, speed, resample, drop);
@@ -176,7 +182,7 @@ void audio_update_volume(struct MPContext *mpctx)
     gain = pow(gain, 3);
     gain *= compute_replaygain(mpctx);
     gain *= db_gain(opts->softvol_gain);
-    if (opts->softvol_mute == 1)
+    if (opts->softvol_mute)
         gain = 0.0;
 
     ao_set_gain(ao_c->ao, gain);
@@ -213,6 +219,7 @@ static void ao_chain_reset_state(struct ao_chain *ao_c)
     ao_c->start_pts = MP_NOPTS_VALUE;
     ao_c->untimed_throttle = false;
     ao_c->underrun = false;
+    ao_c->delaying_audio_start = false;
 }
 
 void reset_audio_state(struct MPContext *mpctx)
@@ -612,13 +619,14 @@ double written_audio_pts(struct MPContext *mpctx)
     return mpctx->ao_chain ? mpctx->ao_chain->last_out_pts : MP_NOPTS_VALUE;
 }
 
-// Return pts value corresponding to currently playing audio.
+// Return pts value corresponding to currently playing audio adjusted for AO delay
+// and playback speed.
 double playing_audio_pts(struct MPContext *mpctx)
 {
     double pts = written_audio_pts(mpctx);
     if (pts == MP_NOPTS_VALUE || !mpctx->ao)
         return pts;
-    return pts - ao_get_delay(mpctx->ao);
+    return pts - mpctx->audio_speed * ao_get_delay(mpctx->ao);
 }
 
 // This garbage is needed for untimed AOs. These consume audio infinitely fast,
@@ -829,8 +837,7 @@ void audio_start_ao(struct MPContext *mpctx)
     double pts = MP_NOPTS_VALUE;
     if (!get_sync_pts(mpctx, &pts))
         return;
-    double apts = written_audio_pts(mpctx);
-    apts -= apts != MP_NOPTS_VALUE ? mpctx->audio_speed * ao_get_delay(mpctx->ao) : 0;
+    double apts = playing_audio_pts(mpctx);
     if (pts != MP_NOPTS_VALUE && apts != MP_NOPTS_VALUE && pts < apts &&
         mpctx->video_status != STATUS_EOF)
     {
@@ -841,12 +848,13 @@ void audio_start_ao(struct MPContext *mpctx)
             MP_VERBOSE(mpctx, "delaying audio start %f vs. %f, diff=%f\n",
                        apts, pts, diff);
             mpctx->logged_async_diff = diff;
+            ao_c->delaying_audio_start = true;
         }
         return;
     }
 
     MP_VERBOSE(mpctx, "starting audio playback\n");
-    ao_c->audio_started = true;
+    ao_c->delaying_audio_start = false;
     ao_start(ao_c->ao);
     mpctx->audio_status = STATUS_PLAYING;
     if (ao_c->out_eof) {
@@ -967,8 +975,7 @@ void fill_audio_out_buffers(struct MPContext *mpctx)
     if (mpctx->audio_status == STATUS_DRAINING) {
         // Wait until the AO has played all queued data. In the gapless case,
         // we trigger EOF immediately, and let it play asynchronously.
-        if (!ao_c->ao || (!ao_is_playing(ao_c->ao) ||
-                          (opts->gapless_audio && !ao_untimed(ao_c->ao))))
+        if (!ao_c->ao || (!ao_is_playing(ao_c->ao) || opts->gapless_audio))
         {
             MP_VERBOSE(mpctx, "audio EOF reached\n");
             mpctx->audio_status = STATUS_EOF;

@@ -430,9 +430,6 @@ void queue_seek(struct MPContext *mpctx, enum seek_type type, double amount,
 
     mp_wakeup_core(mpctx);
 
-    if (mpctx->stop_play == AT_END_OF_FILE)
-        mpctx->stop_play = KEEP_PLAYING;
-
     switch (type) {
     case MPSEEK_RELATIVE:
         seek->flags |= flags;
@@ -532,6 +529,9 @@ double get_playback_time(struct MPContext *mpctx)
         if (length >= 0)
             cur = MPCLAMP(cur, 0, length);
     }
+    // Force to 0 if this is not MP_NOPTS_VALUE.
+    if (cur != MP_NOPTS_VALUE && cur < 0)
+        cur = 0.0;
     return cur;
 }
 
@@ -568,13 +568,6 @@ double get_current_pos_ratio(struct MPContext *mpctx, bool use_range)
                     mpctx->max_frames / (double) mpctx->opts->play_frames);
     }
     return ans;
-}
-
-// 0-100, -1 if unknown
-int get_percent_pos(struct MPContext *mpctx)
-{
-    double pos = get_current_pos_ratio(mpctx, false);
-    return pos < 0 ? -1 : (int)round(pos * 100);
 }
 
 // -2 is no chapters, -1 is before first chapter
@@ -647,7 +640,7 @@ void update_ab_loop_clip(struct MPContext *mpctx)
 
 static void handle_osd_redraw(struct MPContext *mpctx)
 {
-    if (!mpctx->video_out || !mpctx->video_out->config_ok)
+    if (!mpctx->video_out || !mpctx->video_out->config_ok || (mpctx->playing && mpctx->stop_play))
         return;
     // If we're playing normally, let OSD be redrawn naturally as part of
     // video display.
@@ -892,8 +885,6 @@ static void handle_sstep(struct MPContext *mpctx)
 
 static void handle_loop_file(struct MPContext *mpctx)
 {
-    struct MPOpts *opts = mpctx->opts;
-
     if (mpctx->stop_play != AT_END_OF_FILE)
         return;
 
@@ -902,16 +893,16 @@ static void handle_loop_file(struct MPContext *mpctx)
 
     double ab[2];
     if (get_ab_loop_times(mpctx, ab) && mpctx->ab_loop_clip) {
-        if (opts->ab_loop_count > 0) {
-            opts->ab_loop_count--;
-            m_config_notify_change_opt_ptr(mpctx->mconfig, &opts->ab_loop_count);
+        if (mpctx->remaining_ab_loops > 0) {
+            mpctx->remaining_ab_loops--;
+            mp_notify_property(mpctx, "remaining-ab-loops");
         }
         target = ab[0];
         prec = MPSEEK_EXACT;
-    } else if (opts->loop_file) {
-        if (opts->loop_file > 0) {
-            opts->loop_file--;
-            m_config_notify_change_opt_ptr(mpctx->mconfig, &opts->loop_file);
+    } else if (mpctx->remaining_file_loops) {
+        if (mpctx->remaining_file_loops > 0) {
+            mpctx->remaining_file_loops--;
+            mp_notify_property(mpctx, "remaining-file-loops");
         }
         target = get_start_time(mpctx, mpctx->play_dir);
     }
@@ -1156,7 +1147,6 @@ static void handle_playback_restart(struct MPContext *mpctx)
         mpctx->hrseek_active = false;
         mpctx->restart_complete = true;
         mpctx->current_seek = (struct seek_params){0};
-        run_command_opts(mpctx);
         handle_playback_time(mpctx);
         mp_notify(mpctx, MPV_EVENT_PLAYBACK_RESTART, NULL);
         update_core_idle_state(mpctx);
@@ -1209,7 +1199,8 @@ static void handle_eof(struct MPContext *mpctx)
      * other hand, if we don't have a video frame, then the user probably seeked
      * outside of the video, and we do want to quit. */
     bool prevent_eof =
-        mpctx->paused && mpctx->video_out && vo_has_frame(mpctx->video_out);
+        mpctx->paused && mpctx->video_out && vo_has_frame(mpctx->video_out) &&
+        !mpctx->vo_chain->is_coverart;
     /* It's possible for the user to simultaneously switch both audio
      * and video streams to "disabled" at runtime. Handle this by waiting
      * rather than immediately stopping playback due to EOF.

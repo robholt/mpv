@@ -262,6 +262,7 @@ void mp_load_builtin_scripts(struct MPContext *mpctx)
     load_builtin_script(mpctx, 3, mpctx->opts->lua_load_console, "@console.lua");
     load_builtin_script(mpctx, 4, mpctx->opts->lua_load_auto_profiles,
                         "@auto_profiles.lua");
+    load_builtin_script(mpctx, 5, mpctx->opts->lua_load_select, "@select.lua");
 }
 
 bool mp_load_scripts(struct MPContext *mpctx)
@@ -432,23 +433,14 @@ static int load_run(struct mp_script_args *args)
         .detach = true,
     };
     struct mp_subprocess_result res;
-    mp_subprocess2(&opts, &res);
+    mp_subprocess(args->log, &opts, &res);
 
     // Closing these will (probably) make the client exit, if it really died.
-    // They _should_ be CLOEXEC, but are not, because
-    // posix_spawn_file_actions_adddup2() may not clear the CLOEXEC flag
-    // properly if by coincidence fd==src_fd.
     close(fds[0]);
     if (fds[1] >= 0)
         close(fds[1]);
 
-    if (res.error < 0) {
-        MP_ERR(args, "Starting '%s' failed: %s\n", args->filename,
-               mp_subprocess_err_str(res.error));
-        return -1;
-    }
-
-    return 0;
+    return res.error;
 }
 
 const struct mp_scripting mp_scripting_run = {

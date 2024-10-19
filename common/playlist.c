@@ -115,6 +115,9 @@ void playlist_clear(struct playlist *pl)
         playlist_remove(pl, pl->entries[n]);
     assert(!pl->current);
     pl->current_was_replaced = false;
+    pl->playlist_completed = false;
+    pl->playlist_started = false;
+    TA_FREEP(&pl->playlist_dir);
 }
 
 void playlist_clear_except_current(struct playlist *pl)
@@ -123,6 +126,8 @@ void playlist_clear_except_current(struct playlist *pl)
         if (pl->entries[n] != pl->current)
             playlist_remove(pl, pl->entries[n]);
     }
+    pl->playlist_completed = false;
+    pl->playlist_started = false;
 }
 
 // Moves the entry so that it takes "at"'s place (or move to end, if at==NULL).
@@ -205,8 +210,13 @@ struct playlist_entry *playlist_get_last(struct playlist *pl)
 struct playlist_entry *playlist_get_next(struct playlist *pl, int direction)
 {
     assert(direction == -1 || direction == +1);
-    if (!pl->current)
+    if (!pl->current && pl->playlist_completed && direction < 0) {
+        return playlist_entry_from_index(pl, pl->num_entries - 1);
+    } else if (!pl->current && !pl->playlist_started && direction > 0) {
+        return playlist_entry_from_index(pl, 0);
+    } else if (!pl->current) {
         return NULL;
+    }
     assert(pl->current->pl == pl);
     if (direction < 0)
         return playlist_entry_get_rel(pl->current, -1);
@@ -333,6 +343,9 @@ int64_t playlist_transfer_entries_to(struct playlist *pl, int dst_index,
     playlist_update_indexes(pl, dst_index + count, -1);
     source_pl->num_entries = 0;
 
+    pl->playlist_completed = source_pl->playlist_completed;
+    pl->playlist_started = source_pl->playlist_started;
+
     return first ? first->id : 0;
 }
 
@@ -421,4 +434,25 @@ struct playlist *playlist_parse_file(const char *file, struct mp_cancel *cancel,
 
     talloc_free(log);
     return ret;
+}
+
+void playlist_set_current(struct playlist *pl)
+{
+    if (!pl->playlist_dir)
+        return;
+
+    for (int i = 0; i < pl->num_entries; ++i) {
+        if (!pl->entries[i]->playlist_path)
+            continue;
+        char *path = pl->entries[i]->playlist_path;
+        if (path[0] != '.')
+            path = mp_path_join(NULL, pl->playlist_dir, mp_basename(pl->entries[i]->playlist_path));
+        bool same = !strcmp(pl->entries[i]->filename, path);
+        if (path != pl->entries[i]->playlist_path)
+            talloc_free(path);
+        if (same) {
+            pl->current = pl->entries[i];
+            break;
+        }
+    }
 }

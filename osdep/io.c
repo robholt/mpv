@@ -332,12 +332,14 @@ size_t mp_fwrite(const void *restrict buffer, size_t size, size_t count,
 }
 
 #if HAVE_UWP
+PRINTF_ATTRIBUTE(2, 0)
 static int mp_vfprintf(FILE *stream, const char *format, va_list args)
 {
     return vfprintf(stream, format, args);
 }
 #else
 
+PRINTF_ATTRIBUTE(2, 0)
 static int mp_vfprintf(FILE *stream, const char *format, va_list args)
 {
     HANDLE wstream = get_handle(stream);
@@ -664,11 +666,12 @@ static void free_env(void)
 static void init_getenv(void)
 {
 #if !HAVE_UWP
-    wchar_t *wenv = GetEnvironmentStringsW();
-    if (!wenv)
+    wchar_t *wenv_begin = GetEnvironmentStringsW();
+    if (!wenv_begin)
         return;
     utf8_environ_ctx = talloc_new(NULL);
     int num_env = 0;
+    wchar_t *wenv = wenv_begin;
     while (1) {
         size_t len = wcslen(wenv);
         if (!len)
@@ -677,6 +680,7 @@ static void init_getenv(void)
         MP_TARRAY_APPEND(utf8_environ_ctx, utf8_environ, num_env, s);
         wenv += len + 1;
     }
+    FreeEnvironmentStringsW(wenv_begin);
     MP_TARRAY_APPEND(utf8_environ_ctx, utf8_environ, num_env, NULL);
     // Avoid showing up in leak detectors etc.
     atexit(free_env);
@@ -704,7 +708,7 @@ char ***mp_penviron(void)
     return &utf8_environ;  // `environ' should be an l-value
 }
 
-off_t mp_lseek(int fd, off_t offset, int whence)
+off_t mp_lseek64(int fd, off_t offset, int whence)
 {
     HANDLE h = (HANDLE)_get_osfhandle(fd);
     if (h != INVALID_HANDLE_VALUE && GetFileType(h) != FILE_TYPE_DISK) {

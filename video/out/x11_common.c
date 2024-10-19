@@ -37,8 +37,12 @@
 #include <X11/extensions/scrnsaver.h>
 #include <X11/extensions/dpms.h>
 #include <X11/extensions/shape.h>
-#include <X11/extensions/Xpresent.h>
 #include <X11/extensions/Xrandr.h>
+
+#ifndef PRESENT_FUTURE_VERSION
+#define PRESENT_FUTURE_VERSION 0
+#endif
+#include <X11/extensions/Xpresent.h>
 
 #include "misc/bstr.h"
 #include "options/options.h"
@@ -578,13 +582,13 @@ static void vo_x11_update_screeninfo(struct vo *vo)
     }
 }
 
-static struct xrandr_display *get_current_display(struct vo *vo)
+static struct xrandr_display *get_xrandr_display(struct vo *vo, struct mp_rect rc)
 {
     struct vo_x11_state *x11 = vo->x11;
     struct xrandr_display *selected_disp = NULL;
     for (int n = 0; n < x11->num_displays; n++) {
         struct xrandr_display *disp = &x11->displays[n];
-        disp->overlaps = rc_overlaps(disp->rc, x11->winrc);
+        disp->overlaps = rc_overlaps(disp->rc, rc);
         if (disp->overlaps && (!selected_disp || disp->fps < selected_disp->fps))
             selected_disp = disp;
     }
@@ -782,8 +786,9 @@ static const struct mp_keymap keymap[] = {
     {XK_F22, MP_KEY_F+22}, {XK_F23, MP_KEY_F+23}, {XK_F24, MP_KEY_F+24},
 
     // numpad independent of numlock
-    {XK_KP_Subtract, '-'}, {XK_KP_Add, '+'}, {XK_KP_Multiply, '*'},
-    {XK_KP_Divide, '/'}, {XK_KP_Enter, MP_KEY_KPENTER},
+    {XK_KP_Subtract, MP_KEY_KPSUBTRACT}, {XK_KP_Add, MP_KEY_KPADD},
+    {XK_KP_Multiply, MP_KEY_KPMULTIPLY}, {XK_KP_Divide, MP_KEY_KPDIVIDE},
+    {XK_KP_Enter, MP_KEY_KPENTER},
 
     // numpad with numlock
     {XK_KP_0, MP_KEY_KP0}, {XK_KP_1, MP_KEY_KP1}, {XK_KP_2, MP_KEY_KP2},
@@ -795,7 +800,7 @@ static const struct mp_keymap keymap[] = {
     // numpad without numlock
     {XK_KP_Insert, MP_KEY_KPINS}, {XK_KP_End, MP_KEY_KPEND},
     {XK_KP_Down, MP_KEY_KPDOWN}, {XK_KP_Page_Down, MP_KEY_KPPGDOWN},
-    {XK_KP_Left, MP_KEY_KPLEFT}, {XK_KP_Begin, MP_KEY_KP5},
+    {XK_KP_Left, MP_KEY_KPLEFT}, {XK_KP_Begin, MP_KEY_KPBEGIN},
     {XK_KP_Right, MP_KEY_KPRIGHT}, {XK_KP_Home, MP_KEY_KPHOME}, {XK_KP_Up, MP_KEY_KPUP},
     {XK_KP_Page_Up, MP_KEY_KPPGUP}, {XK_KP_Delete, MP_KEY_KPDEL},
 
@@ -1262,6 +1267,7 @@ void vo_x11_check_events(struct vo *vo)
             if (x11->window == None)
                 break;
             vo_x11_update_geometry(vo);
+            vo_x11_update_screeninfo(vo);
             if (x11->parent && Event.xconfigure.window == x11->parent) {
                 MP_TRACE(x11, "adjusting embedded window position\n");
                 XMoveResizeWindow(x11->display, x11->window,
@@ -1665,6 +1671,7 @@ static void vo_x11_map_window(struct vo *vo, struct mp_rect rc)
         XChangeProperty(x11->display, x11->window, XA(x11, _NET_WM_STATE), XA_ATOM,
                         32, PropModeAppend, (unsigned char *)&state, 1);
         x11->fs = 1;
+        x11->init_fs = true;
         // The "saved" positions are bogus, so reset them when leaving FS again.
         x11->size_changed_during_fs = true;
         x11->pos_changed_during_fs = true;
@@ -1932,7 +1939,7 @@ static void vo_x11_update_geometry(struct vo *vo)
                               &x, &y, &dummy_win);
         x11->winrc = (struct mp_rect){x, y, x + w, y + h};
     }
-    struct xrandr_display *disp = get_current_display(vo);
+    struct xrandr_display *disp = get_xrandr_display(vo, x11->winrc);
     // Try to fallback to something reasonable if we have no disp yet
     if (!disp) {
         int screen = vo_x11_select_screen(vo);
@@ -1985,6 +1992,26 @@ static void vo_x11_fullscreen(struct vo *vo)
                 rc.x1 -= 1;
                 rc.y1 -= 1;
             }
+
+            // If launched with --fs and the fs screen is different than
+            // nofsrc, try to translate nofsrc to the fs screen.
+            if (x11->init_fs) {
+                struct xrandr_display *fs_disp = get_xrandr_display(vo, x11->winrc);
+                struct xrandr_display *nofs_disp = get_xrandr_display(vo, x11->nofsrc);
+                if (fs_disp && nofs_disp && fs_disp->screen != nofs_disp->screen) {
+                    int old_w = mp_rect_w(x11->nofsrc);
+                    int old_h = mp_rect_h(x11->nofsrc);
+                    int new_x = (mp_rect_w(fs_disp->rc) - old_w) / 2 + fs_disp->rc.x0;
+                    int new_y = (mp_rect_h(fs_disp->rc) - old_h) / 2 + fs_disp->rc.y0;
+                    x11->nofsrc.x0 = new_x;
+                    x11->nofsrc.x1 = new_x + old_w;
+                    x11->nofsrc.y0 = new_y;
+                    x11->nofsrc.y1 = new_y + old_h;
+                    rc = x11->nofsrc;
+                }
+                x11->init_fs = false;
+            }
+
             vo_x11_move_resize(vo, x11->pos_changed_during_fs,
                                    x11->size_changed_during_fs, rc);
         }
@@ -2106,6 +2133,8 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
                 vo_x11_set_input_region(vo, opts->cursor_passthrough);
             if (opt == &opts->x11_present)
                 xpresent_set(x11);
+            if (opt == &opts->keepaspect || opt == &opts->keepaspect_window)
+                vo_x11_sizehint(vo, x11->fs ? x11->nofsrc : x11->winrc, false);
             if (opt == &opts->geometry || opt == &opts->autofit ||
                 opt == &opts->autofit_smaller || opt == &opts->autofit_larger)
             {
@@ -2200,8 +2229,7 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
         set_screensaver(x11, true);
         return VO_TRUE;
     case VOCTRL_UPDATE_WINDOW_TITLE:
-        talloc_free(x11->window_title);
-        x11->window_title = talloc_strdup(x11, (char *)arg);
+        talloc_replace(x11, x11->window_title, (char *)arg);
         if (!x11->parent || x11->opts->x11_wid_title)
             vo_x11_update_window_title(vo);
         return VO_TRUE;

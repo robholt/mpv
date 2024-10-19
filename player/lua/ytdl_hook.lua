@@ -27,14 +27,14 @@ end)
 local chapter_list = {}
 local playlist_cookies = {}
 
-function Set (t)
+local function Set (t)
     local set = {}
     for _, v in pairs(t) do set[v] = true end
     return set
 end
 
 -- ?: surrogate (keep in mind that there is no lazy evaluation)
-function iif(cond, if_true, if_false)
+local function iif(cond, if_true, if_false)
     if cond then
         return if_true
     end
@@ -43,10 +43,29 @@ end
 
 -- youtube-dl JSON name to mpv tag name
 local tag_list = {
+    ["artist"]          = "artist",
+    ["album"]           = "album",
+    ["album_artist"]    = "album_artist",
+    ["composer"]        = "composer",
+    ["upload_date"]     = "date",
+    ["genre"]           = "genre",
+    ["series"]          = "series",
+    ["track"]           = "title",
+    ["track_number"]    = "track",
     ["uploader"]        = "uploader",
     ["channel_url"]     = "channel_url",
-    -- these titles tend to be a bit too long, so hide them on the terminal
-    -- (default --display-tags does not include this name)
+
+    -- These tags are not displayed by default, but can be shown with
+    -- --display-tags
+    ["playlist"]        = "ytdl_playlist",
+    ["playlist_index"]  = "ytdl_playlist_index",
+    ["playlist_title"]  = "ytdl_playlist_title",
+    ["playlist_id"]     = "ytdl_playlist_id",
+    ["chapter"]         = "ytdl_chapter",
+    ["season"]          = "ytdl_season",
+    ["episode"]         = "ytdl_episode",
+    ["is_live"]         = "ytdl_is_live",
+    ["release_year"]    = "ytdl_release_year",
     ["description"]     = "ytdl_description",
     -- "title" is handled by force-media-title
     -- tags don't work with all_formats=yes
@@ -97,8 +116,6 @@ local function platform_is_windows()
 end
 
 local function exec(args)
-    msg.debug("Running: " .. table.concat(args, " "))
-
     return mp.command_native({
         name = "subprocess",
         args = args,
@@ -129,7 +146,7 @@ local function set_http_headers(http_headers)
         mp.set_property("file-local-options/user-agent", useragent)
     end
     local additional_fields = {"Cookie", "Referer", "X-Forwarded-For"}
-    for idx, item in pairs(additional_fields) do
+    for _, item in pairs(additional_fields) do
         local field_value = http_headers[item]
         if field_value then
             headers[#headers + 1] = item .. ": " .. field_value
@@ -180,7 +197,7 @@ end
 local function serialize_cookies_for_avformat(cookies)
     local result = ''
     for _, cookie in pairs(cookies) do
-        local cookie_str = ('%s=%s; '):format(cookie.name, cookie.value)
+        local cookie_str = ('%s=%s; '):format(cookie.name, cookie.value:gsub('^"(.+)"$', '%1'))
         for k, v in pairs(cookie) do
             if k ~= "name" and k ~= "value" then
                 cookie_str = cookie_str .. ('%s=%s; '):format(k, v)
@@ -335,7 +352,7 @@ local function make_absolute_url(base_url, url)
     rest:gsub("([^/]+)", function(c) table.insert(segs, c) end)
     url:gsub("([^/]+)", function(c) table.insert(segs, c) end)
     local resolved_url = {}
-    for i, v in ipairs(segs) do
+    for _, v in ipairs(segs) do
         if v == ".." then
             table.remove(resolved_url)
         elseif v ~= "." then
@@ -478,7 +495,7 @@ local function formats_to_edl(json, formats, use_all_formats)
     local streams = {}
 
     local tbr_only = true
-    for index, track in ipairs(formats) do
+    for _, track in ipairs(formats) do
         tbr_only = tbr_only and track["tbr"] and
                    (not track["abr"]) and (not track["vbr"])
     end
@@ -492,8 +509,7 @@ local function formats_to_edl(json, formats, use_all_formats)
     -- Iterate in reverse to get best track first.
     for index = #formats, 1, -1 do
         local track = formats[index]
-        local edl_track = nil
-        edl_track = edl_track_joined(track.fragments,
+        local edl_track = edl_track_joined(track.fragments,
             track.protocol, json.is_live,
             track.fragment_base_url)
         if not edl_track and not url_is_safe(track.url) then
@@ -686,8 +702,7 @@ local function add_single_video(json)
 
     if streamurl == "" and json.url then
         format_info = "youtube-dl (single)"
-        local edl_track = nil
-        edl_track = edl_track_joined(json.fragments, json.protocol,
+        local edl_track = edl_track_joined(json.fragments, json.protocol,
             json.is_live, json.fragment_base_url)
 
         if not edl_track and not url_is_safe(json.url) then
@@ -768,8 +783,9 @@ local function add_single_video(json)
                     msg.verbose("adding thumbnail")
                     mp.commandv("video-add", thumb_info.url, "auto")
                     thumb_height = 0
-                elseif (thumb_preference ~= nil and (thumb_info.preference or -math.huge) > thumb_preference) or
-                    (thumb_preference == nil and ((thumb_info.height or 0) > thumb_height)) then
+                elseif (thumb_preference ~= nil and
+                        (thumb_info.preference or -math.huge) > thumb_preference) or
+                       (thumb_preference == nil and (thumb_info.height or 0) > thumb_height) then
                     thumb = thumb_info.url
                     thumb_height = thumb_info.height or 0
                     thumb_preference = thumb_info.preference
@@ -879,7 +895,7 @@ local function check_version(ytdl_path)
     end
 end
 
-function run_ytdl_hook(url)
+local function run_ytdl_hook(url)
     local start_time = os.clock()
 
     -- strip ytdl://
@@ -951,7 +967,8 @@ function run_ytdl_hook(url)
 
         for _, path in pairs(ytdl.paths_to_search) do
             -- search for youtube-dl in mpv's config dir
-            local exesuf = platform_is_windows() and not path:lower():match("%.exe$") and ".exe" or ""
+            local exesuf = platform_is_windows() and not path:lower():match("%.exe$")
+                           and ".exe" or ""
             local ytdl_cmd = mp.find_config_file(path .. exesuf)
             if ytdl_cmd then
                 msg.verbose("Found youtube-dl at: " .. ytdl_cmd)
@@ -960,11 +977,13 @@ function run_ytdl_hook(url)
                 result = exec(command)
                 break
             else
-                msg.verbose("No youtube-dl found with path " .. path .. exesuf .. " in config directories")
+                msg.verbose("No youtube-dl found with path " .. path .. exesuf ..
+                            " in config directories")
                 command[1] = path
                 result = exec(command)
                 if result.error_string == "init" then
-                    msg.verbose("youtube-dl with path " .. path .. " not found in PATH or not enough permissions")
+                    msg.verbose("youtube-dl with path " .. path ..
+                                " not found in PATH or not enough permissions")
                 else
                     msg.verbose("Found youtube-dl with path " .. path .. " in PATH")
                     ytdl.path = path
@@ -974,11 +993,15 @@ function run_ytdl_hook(url)
         end
 
         ytdl.searched = true
+
+        mp.set_property("user-data/mpv/ytdl/path", ytdl.path or "")
     end
 
     if result.killed_by_us then
         return
     end
+
+    mp.set_property_native("user-data/mpv/ytdl/json-subprocess-result", result)
 
     local json = result.stdout
     local parse_err = nil
@@ -996,7 +1019,7 @@ function run_ytdl_hook(url)
         msg.verbose("stderr:", result.stderr)
 
         -- trim our stderr to avoid spurious newlines
-        ytdl_err = result.stderr:gsub("^%s*(.-)%s*$", "%1")
+        local ytdl_err = result.stderr:gsub("^%s*(.-)%s*$", "%1")
         msg.error(ytdl_err)
         local err = "youtube-dl failed: "
         if result.error_string and result.error_string == "init" then
@@ -1075,7 +1098,7 @@ function run_ytdl_hook(url)
                 json.entries[entry_wsubs].duration ~= nil then
                 for j, req in pairs(json.entries[entry_wsubs].requested_subtitles) do
                     local subfile = "edl://"
-                    for i, entry in pairs(json.entries) do
+                    for _, entry in pairs(json.entries) do
                         if entry.requested_subtitles ~= nil and
                             entry.requested_subtitles[j] ~= nil and
                             url_is_safe(entry.requested_subtitles[j].url) then
@@ -1096,7 +1119,7 @@ function run_ytdl_hook(url)
         else
             local playlist_index = parse_yt_playlist(url, json)
             local playlist = {"#EXTM3U"}
-            for i, entry in pairs(json.entries) do
+            for _, entry in pairs(json.entries) do
                 local site = entry.url
                 local title = entry.title
 
@@ -1151,17 +1174,21 @@ function run_ytdl_hook(url)
     msg.debug('script running time: '..os.clock()-start_time..' seconds')
 end
 
-if not o.try_ytdl_first then
-    mp.add_hook("on_load", 10, function ()
-        msg.verbose('ytdl:// hook')
-        local url = mp.get_property("stream-open-filename", "")
-        if url:find("ytdl://") ~= 1 then
-            msg.verbose('not a ytdl:// url')
-            return
-        end
-        run_ytdl_hook(url)
-    end)
+local function on_load_hook(load_fail)
+    local url = mp.get_property("stream-open-filename", "")
+    local force = url:find("^ytdl://")
+    local early = force or o.try_ytdl_first
+    if early == load_fail then
+        return
+    end
+    if not force and (not url:find("^https?://") or is_blacklisted(url)) then
+        return
+    end
+    run_ytdl_hook(url)
 end
+
+mp.add_hook("on_load", 10, function() on_load_hook(false) end)
+mp.add_hook("on_load_fail", 10, function() on_load_hook(true) end)
 
 mp.add_hook("on_load", 20, function ()
     msg.verbose('playlist hook')
@@ -1171,16 +1198,6 @@ mp.add_hook("on_load", 20, function ()
     end
 end)
 
-mp.add_hook(o.try_ytdl_first and "on_load" or "on_load_fail", 10, function()
-    msg.verbose('full hook')
-    local url = mp.get_property("stream-open-filename", "")
-    if url:find("ytdl://") ~= 1 and
-        not ((url:find("https?://") == 1) and not is_blacklisted(url)) then
-        return
-    end
-    run_ytdl_hook(url)
-end)
-
 mp.add_hook("on_preloaded", 10, function ()
     if next(chapter_list) ~= nil then
         msg.verbose("Setting chapters")
@@ -1188,4 +1205,8 @@ mp.add_hook("on_preloaded", 10, function ()
         mp.set_property_native("chapter-list", chapter_list)
         chapter_list = {}
     end
+end)
+
+mp.add_hook("on_after_end_file", 50, function ()
+    mp.del_property("user-data/mpv/ytdl/json-subprocess-result")
 end)

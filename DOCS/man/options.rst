@@ -5,11 +5,11 @@ Track Selection
 ---------------
 
 ``--alang=<languagecode[,languagecode,...]>``
-    Specify a priority list of audio languages to use, as IETF language tags.
-    Equivalent ISO 639-1 two-letter and ISO 639-2 three-letter codes are treated the same.
-    The first tag in the list whose language matches a track in the file will be used.
-    A track that matches more subtags will be preferred over one that matches fewer,
-    with preference given to earlier subtags over later ones. See also ``--aid``.
+    Specify a prioritized list of audio languages to use, as IETF language tags.
+    Equivalent ISO 639-1 two-letter and ISO 639-2 three-letter codes are treated
+    the same. The first tag in the list that matches track's language in the file
+    will be used. A track that matches more subtags will be preferred over one
+    that matches fewer. See also ``--aid``.
 
     This is a string list option. See `List Options`_ for details.
 
@@ -146,7 +146,7 @@ Track Selection
 ``--subs-match-os-language=<yes|no>``
     When autoselecting a subtitle track, select the track that matches the language of your OS
     if the audio stream is in a different language if suitable (default track or a forced track
-    under the right conditions). Note that if ``-slang`` is set, this will be completely ignored
+    under the right conditions). Note that if ``--slang`` is set, this will be completely ignored
     (default: yes).
 
 ``--subs-fallback=<yes|default|no>``
@@ -236,6 +236,35 @@ Playback Control
     If ``--audio-pitch-correction`` (on by default) is used, playing with a
     speed higher than normal automatically inserts the ``scaletempo2`` audio
     filter.
+
+``--pitch=<0.01-100>``
+    Raise or lower the audio's pitch by the factor given as parameter. Does not
+    affect playback speed. Playing with an altered pitch automatically inserts
+    the ``scaletempo2`` audio filter.
+
+    Since pitch change is achieved by combining pitch-preserving speed change and
+    resampling, the range of pitch change is effectively limited by the
+    ``min-speed`` and ``max-speed`` parameters of ``scaletempo2``: for example,
+    a ``min-speed`` of 0.25 limits the highest pitch factor to 4 (1/0.25).
+
+    In a standard 12-tone scale system, octaves are separated by a factor of 2
+    whereas semitones are represented by a factor of 2^(1/12). This means
+    pitches can easily be shifted up or down with a simple multiplier.
+
+    .. admonition:: Examples
+
+        ``--pitch=2``
+            Shifts the pitch up a full octave.
+        ``--pitch=0.5``
+            Shifts the pitch down an octave.
+        ``--pitch=1.498307`` (2^(7/12))
+            Shifts the pitch up a perfect fifth.
+        ``--pitch=0.667420`` (2^(-7/12))
+            Shifts the pitch down a perfect fifth.
+        ``--pitch=1.059463`` (2^(1/12))
+            Shifts the pitch up a semitone.
+        ``--pitch=0.943874`` (2^(-1/12))
+            Shifts the pitch down a semitone.
 
 ``--pause``
     Start the player in paused state.
@@ -441,11 +470,10 @@ Playback Control
 
 ``--ab-loop-count=<N|inf>``
     Run A-B loops only N times, then ignore the A-B loop points (default: inf).
-    Every finished loop iteration will decrement this option by 1 (unless it is
-    set to ``inf`` or 0). ``inf`` means that looping goes on forever. If this
-    option is set to 0, A-B looping is ignored, and even the ``ab-loop`` command
-    will not enable looping again (the command will show ``(disabled)`` on the
-    OSD message if both loop points are set, but ``ab-loop-count`` is 0).
+    ``inf`` means that looping goes on forever. If this option is set to 0, A-B
+    looping is ignored, and even the ``ab-loop`` command will not enable looping
+    again (the command will show ``(disabled)`` on the OSD message if both loop
+    points are set, but ``ab-loop-count`` is 0).
 
 ``--ordered-chapters=<yes|no>``
     Enable support for Matroska ordered chapters. mpv will load and
@@ -1023,6 +1051,10 @@ Program Behavior
     `Conditional auto profiles`_ for details. ``auto`` will load the script,
     but immediately unload it if there are no conditional profiles.
 
+``--load-select=<yes|no>``
+    Enable the builtin script that lets you select from lists of items (default:
+    yes). By default, its keybindings start with the ``g`` key.
+
 ``--player-operation-mode=<cplayer|pseudo-gui>``
     For enabling "pseudo GUI mode", which means that the defaults for some
     options are changed. This option should not normally be used directly, but
@@ -1320,11 +1352,11 @@ Video
     :rkmpp:     requires ``--vo=gpu`` (some RockChip devices only)
 
     ``auto`` tries to automatically enable hardware decoding using the first
-    available method. This still depends what VO you are using. For example,
-    if you are not using ``--vo=gpu`` or ``--vo=vdpau``, vdpau decoding will
-    never be enabled. Also note that if the first found method doesn't actually
-    work, it will always fall back to software decoding, instead of trying the
-    next method (might matter on some Linux systems).
+    available method. This still depends what VO you are using. See the list
+    above, for which ``--vo`` and ``gpu-context`` is required for a given
+    hwdec. It will go down the list of available hwdecs until one is
+    successfully initialised. If all of them fail, it will fallback to software
+    decoding.
 
     ``auto-safe`` is similar to ``auto``, but allows only whitelisted methods
     that are considered "safe". This is supposed to be a reasonable way to
@@ -1659,7 +1691,7 @@ Video
         Works in ``--correct-pts=no`` mode only.
 
 ``--deinterlace=<yes|no|auto>``
-    Enable or disable interlacing (default: no).
+    Enable or disable deinterlacing (default: no).
     Interlaced video shows ugly comb-like artifacts, which are visible on
     fast movement. Enabling this typically inserts the bwdif video filter in
     order to deinterlace the video, or lets the video output apply deinterlacing
@@ -1676,7 +1708,7 @@ Video
     it's not actually interlaced.
 
 ``--deinterlace-field-parity=<tff|bff|auto>``
-    Specify the field parity/order when deinterlacing(default: auto)
+    Specify the field parity/order when deinterlacing (default: auto).
     Each frame of an interlaced video is divided into two fields, which are
     then separately transmitted. Top field represents even lines while bottom
     field represents odd lines. When deinterlacing the deinterlacer needs to
@@ -1723,7 +1755,7 @@ Video
     You can get the list of allowed codecs with ``mpv --vd=help``. Remove the
     prefix, e.g. instead of ``lavc:h264`` use ``h264``.
 
-    By default, this is set to ``h264,vc1,hevc,vp8,vp9,av1``. Note that
+    By default, this is set to ``h264,vc1,hevc,vp8,vp9,av1,prores``. Note that
     the hardware acceleration special codecs like ``h264_vdpau`` are not
     relevant anymore, and in fact have been removed from FFmpeg in this form.
 
@@ -2048,10 +2080,8 @@ Audio
     Audio delay in seconds (positive or negative float value). Positive values
     delay the audio, and negative values delay the video.
 
-``--mute=<yes|no|auto>``
+``--mute=<yes|no>``
     Set startup audio mute status (default: no).
-
-    ``auto`` is a deprecated possible value that is equivalent to ``no``.
 
     See also: ``--volume``.
 
@@ -2252,10 +2282,12 @@ Audio
     :all:   Load all audio files in the current and ``--audio-file-paths``
             directories.
 
-``--audio-file-auto-exts=ext1,ext2,...``
-    Audio file extentions to try and match when using ``audio-file-auto``.
+``--audio-exts=ext1,ext2,...``
+    Audio file extentions to try to match when using ``--audio-file-auto``,
+    ``--autocreate-playlist`` or ``--directory-filter-types``.
 
     This is a string list option. See `List Options`_ for details.
+    Use ``--help=audio-exts`` to see default extensions.
 
 ``--audio-file-paths=<path1:path2:...>``
     Equivalent to ``--sub-file-paths`` option, but for auto-loaded audio files.
@@ -2385,25 +2417,27 @@ Subtitles
 
 ``--sub-scale-by-window=<yes|no>``
     Whether to scale subtitles with the window size (default: yes). If this is
-    disabled, changing the window size won't change the subtitle font size.
-
-    Like ``--sub-scale``, this can break ASS subtitles.
-
-``--sub-scale-with-window=<yes|no>``
-    Make the subtitle font size relative to the window, instead of the video.
-    This is useful if you always want the same font size, even if the video
-    doesn't cover the window fully, e.g. because screen aspect and window
-    aspect mismatch (and the player adds black bars).
-
-    Default: yes.
-
-    This option is misnamed. The difference to the confusingly similar sounding
-    option ``--sub-scale-by-window`` is that ``--sub-scale-with-window`` still
-    scales with the approximate window size, while the other option disables
-    this scaling.
+    disabled while ``--sub-scale-with-window`` is set to yes, changing the window
+    size won't change the subtitle font size.
 
     Affects plain text subtitles only (or ASS if ``--sub-ass-override`` is set
     high enough).
+
+``--sub-scale-with-window=<yes|no>``
+    Make the subtitle font size relative to the window (default: yes). If this is
+    disabled while ``--sub-scale-by-window`` is set to yes, the subtitle font
+    size is scaled relative to the video size instead.
+
+    Affects plain text subtitles only (or ASS if ``--sub-ass-override`` is set
+    high enough).
+
+    .. note::
+
+        By default, the subtitle font size is scaled with the window size.
+        To make the font size constant, set only ``--sub-scale-by-window`` to no.
+        To make the font size scale with video size instead, set only
+        ``--sub-scale-with-window`` to no.
+        It's not meaningful to set both options to no.
 
 ``--sub-ass-scale-with-window=<yes|no>``
     Like ``--sub-scale-with-window``, but affects subtitles in ASS format only.
@@ -2496,7 +2530,7 @@ Subtitles
 
         Using this option may lead to incorrect subtitle rendering.
 
-``--sub-ass-override=<yes|no|force|scale|strip>``
+``--sub-ass-override=<no|yes|scale|force|strip>``
     Control whether user style overrides should be applied. Note that all of
     these overrides try to be somewhat smart about figuring out whether or not
     a subtitle is considered a "sign".
@@ -2505,17 +2539,17 @@ Subtitles
             overrides.
     :yes:   Apply all the ``--sub-ass-*`` style override options. Changing the
             default for any of these options can lead to incorrect subtitle
-            rendering (default).
+            rendering.
+    :scale: Like ``yes``, but also apply ``--sub-scale`` (default).
     :force: Like ``yes``, but also force all ``--sub-*`` options. Can break
             rendering easily.
-    :scale: Like ``yes``, but also apply ``--sub-scale``.
     :strip: Radically strip all ASS tags and styles from the subtitle. This
             is equivalent to the old ``--no-ass`` / ``--no-sub-ass`` options.
 
     This also controls some bitmap subtitle overrides, as well as HTML tags in
     formats like SRT, despite the name of the option.
 
-``--secondary-sub-ass-override=<yes|no|force|scale|strip>``
+``--secondary-sub-ass-override=<no|yes|scale|force|strip>``
     Control whether user secondary substyle overrides should be applied. This
     works exactly like ``--sub-ass-override``.
 
@@ -2534,31 +2568,37 @@ Subtitles
 
     Default: yes.
 
-``--sub-ass-vsfilter-aspect-compat=<yes|no>``
-    Stretch SSA/ASS subtitles when playing anamorphic videos for compatibility
-    with traditional VSFilter behavior. This switch has no effect when the
-    video is stored with square pixels.
+``--sub-ass-use-video-data=<none|aspect-ratio|all>``
+    Controls which information about the video stream is passed to libass.
+    Any option but ``all`` is incompatible with standard ASS as defined by VSFilter,
+    whose behavior most subtitle scripts and renderers target, including libass.
+    Video stream properties are needed to accurately emulate VSFilter semantics and
+    withholding them will likely result in broken subtitle rendering for most files.
+    It's thus recommended to only change this selectively if required on a per-file basis.
 
-    The renderer historically most commonly used for the SSA/ASS subtitle
-    formats, VSFilter, had questionable behavior that resulted in subtitles
-    being stretched too if the video was stored in anamorphic format that
-    required scaling for display.  This behavior is usually undesirable and
-    newer VSFilter versions may behave differently. However, many existing
-    scripts compensate for the stretching by modifying things in the opposite
-    direction.  Thus, if such scripts are displayed "correctly", they will not
-    appear as intended.  This switch enables emulation of the old VSFilter
-    behavior (undesirable but expected by many existing scripts).
+    :none:  Don't forward any video stream information.
+    :aspect-ratio: Only forward aspect ratio; fallbacks are used for other properties.
+                   This makes behaviour consistent across different video resolutions.
+    :all:   Forward all available information, notably including storage resolution.
 
-    Enabled by default.
+    For certain kinds of broken ASS files which got repurposed across
+    several video resolutions without either setting ``LayoutRes`` headers
+    or adjusting affected effects, it may be desirable to withhold storage resolution
+    information from libass to ensure consistent rendering across resolutions.
+    Among others this affects 3D rotations and blurs.
+    When encountering such files, try setting ``aspect-ratio``.
 
-``--sub-ass-vsfilter-blur-compat=<yes|no>``
-    Scale ``\blur`` tags by video resolution instead of script resolution
-    (enabled by default). This is bug in VSFilter, which according to some,
-    can't be fixed anymore in the name of compatibility.
+    Even more broken files on anamorphic video might also exhibit stretching
+    unless aspect ratio information is also faked, in this case you can try
+    using ``none``. This has never an effect on non-anamorphic video.
 
-    Note that this uses the actual video resolution for calculating the
-    offset scale factor, not what the video filter chain or the video output
-    use.
+    Default: ``all``
+
+``--sub-ass-video-aspect-override=<no|ratio>``
+    Allows passing any arbitrary aspect ratio to libass instead of the video’s
+    actual aspect ratio. Zero or negative aspect ratios are identical to ``no``.
+
+    This has no effect if ``sub-ass-use-video-data`` is set to ``none``.
 
 ``--sub-vsfilter-bidi-compat=<yes|no>``
     Set implicit bidi detection to ``ltr`` instead of ``auto`` to match ASS'
@@ -2829,10 +2869,6 @@ Subtitles
 
     Default: 55.
 
-``--sub-back-color=<color>``
-    See ``--sub-color``. Color used for sub text background. You can use
-    ``--sub-shadow-offset`` to change its size relative to the text.
-
 ``--sub-blur=<0..20.0>``
     Gaussian blur factor applied to the sub font border.
     0 means no blur applied (default).
@@ -2843,14 +2879,47 @@ Subtitles
 ``--sub-italic=<yes|no>``
     Format text on italic.
 
-``--sub-border-color=<color>``
-    See ``--sub-color``. Color used for the sub font border.
+``--sub-outline-color=<color>``
+    See ``--sub-color``. Color used for the sub font outline.
 
-``--sub-border-size=<size>``
-    Size of the sub font border in scaled pixels (see ``--sub-font-size``
-    for details). A value of 0 disables borders.
+    ``--sub-border-color`` is an alias for ``--sub-outline-color``.
+
+``--sub-back-color=<color>``
+    See ``--sub-color``. Color used for sub text background.
+
+    ``--sub-shadow-color`` is an alias for ``--sub-back-color``.
+
+``--sub-outline-size=<size>``
+    Size of the sub font outline in scaled pixels (see ``--sub-font-size``
+    for details). A value of 0 disables outlines.
+
+    ``--sub-border-size`` is an alias for ``--sub-outline-size``.
 
     Default: 3.
+
+``--sub-border-style=<outline-and-shadow|opaque-box|background-box>``
+    The style of the border.
+
+    - ``outline-and-shadow``: draw outline and shadow.
+      The size of the outline is determined by ``--sub-outline-size``,
+      and the offset of the shadow is determined by ``--sub-shadow-offset``.
+      The outline is colored by ``--sub-outline-color``,
+      and the shadow is colored by ``--sub-back-color``.
+      This corresponds to ``BorderStyle=1`` in the ASS spec.
+    - ``opaque-box``: draw outline and shadow as opaque boxes that tightly wrap each lines of text.
+      The margin of the outline opaque box is determined by ``--sub-outline-size``,
+      and the offset of the shadow opaque box is determined by ``--sub-shadow-offset``.
+      The outline opaque box is colored by ``--sub-outline-color``,
+      and the shadow opaque box is colored by ``--sub-back-color``.
+      Despite its name, the opaque box can be semi-transparent.
+      This corresponds to ``BorderStyle=3`` in the ASS spec.
+    - ``background-box``: draw a background box that bounds all lines of text.
+      The background box is colored by ``--sub-back-color``,
+      and the margin of the background box is determined by ``--sub-shadow-offset``.
+      The behavior of the outline is the same as the ``outline-and-shadow`` style.
+      This corresponds to ``BorderStyle=4``, which is a libass-specific extension.
+
+    Default: ``outline-and-shadow``.
 
 ``--sub-color=<color>``
     Specify the color used for unstyled text subtitles.
@@ -2873,7 +2942,7 @@ Subtitles
     Alternatively, the color can be specified as a RGB hex triplet in the form
     ``#RRGGBB``, where each 2-digit group expresses a color value in the
     range 0 (``00``) to 255 (``FF``). For example, ``#FF0000`` is red.
-    This is similar to web colors. Alpha is given with ``#AARRGGBB``.
+    Alpha is given with ``#AARRGGBB``.
 
     .. admonition:: Examples
 
@@ -2920,15 +2989,6 @@ Subtitles
     Applies justification as defined by ``--sub-justify`` on ASS subtitles
     if ``--sub-ass-override`` is not set to ``no``.
     Default: ``no``.
-
-``--sub-shadow-color=<color>``
-    See ``--sub-color``. Color used for sub text shadow.
-
-    .. note::
-
-        ignored when ``--sub-back-color`` is
-        specified (or more exactly: when that option is not set to completely
-        transparent).
 
 ``--sub-shadow-offset=<size>``
     Displacement of the sub text shadow in scaled pixels (see
@@ -4092,6 +4152,26 @@ Demuxer
     all. The default is ``auto``, which behaves like ``recursive`` with
     ``--shuffle``, and like ``lazy`` otherwise.
 
+``--directory-filter-types=<video,audio,image>``
+    Media file types to filter when opening directory. If the list is empty,
+    all files are added to the playlist. (Default: ``video,audio,image``)
+
+    This is a string list option. See `List Options`_ for details.
+
+``--autocreate-playlist=<no|filter|same>``
+    When opening a local file, act as if the parent directory is opened and
+    create a playlist automatically.
+
+    :no:     Load a single file (default).
+    :filter: Create a playlist from the parent directory with files matching
+             ``--directory-filter-types``.
+    :same:   Create a playlist from the parent directory with files matching the
+             same category as the currently loaded file. One of the
+             ``*-exts`` is selected based on the input file
+             and only files with matching extensions are added to the playlist.
+             If the input file itself is not matched to any extension list,
+             the playlist is not autogenerated.
+
 Input
 -----
 
@@ -4133,6 +4213,12 @@ Input
     Enable loading of built-in key bindings during start-up (default: yes). This
     option is applied only during (lib)mpv initialization, and if disabled then it
     will not be not possible to enable them later. May be useful to libmpv clients.
+
+``--input-builtin-dragging=<yes|no>``
+    Enable the built-in window-dragging behavior (default: yes). Setting it to no
+    disables the built-in dragging behavior. Note that unlike the ``window-dragging``
+    option, this option only affects VOs which support the ``begin-vo-dragging``
+    command, and does not disable window dragging initialized with the command.
 
 ``--input-cmdlist``
     Prints all commands that can be bound to keys.
@@ -4200,8 +4286,8 @@ Input
     ``--input-ipc-server``, except no socket is created, and instead the passed
     FD is treated like a socket connection received from ``accept()``. In
     practice, you could pass either a FD created by ``socketpair()``, or a pipe.
-    In both cases, you must sure the FD is actually inherited by mpv (do not
-    set the POSIX ``CLOEXEC`` flag).
+    In both cases, you must make sure that the FD is actually inherited by mpv
+    (do not set the POSIX ``CLOEXEC`` flag).
 
     The player quits when the connection is closed.
 
@@ -4214,7 +4300,11 @@ Input
 
     .. note::
 
-        Does not and will not work on Windows.
+        To use this option on Windows, the fd must refer to a wrapped
+        (created by ``_open_osfhandle``) named pipe server handle with a client
+        already connected. The named pipe must be created duplex with overlapped
+        IO and inheritable handles. The program communicates with mpv through
+        the client handle.
 
     .. warning::
 
@@ -4231,8 +4321,7 @@ Input
 
 ``--input-cursor=<yes|no>``
     Permit mpv to receive pointer events reported by the video output
-    driver. Necessary to use the OSC, or to select the buttons in DVD menus.
-    Support depends on the VO in use.
+    driver. Necessary to use the OSC. Support depends on the VO in use.
 
 ``--input-cursor-passthrough=<yes|no>``
     Tell the backend windowing system to allow pointer events to passthrough
@@ -4298,6 +4387,11 @@ Input
     for the touch events (default: yes). This is useful for compatibility
     for mouse key bindings and scripts which read mouse positions for platforms
     which do not support ``--native-touch=no`` (e.g. Wayland).
+
+``--input-dragging-deadzone=<N>``
+    Begin the built-in window dragging when the mouse moves outside a deadzone of
+    ``N`` pixels while the mouse button is being held down (default: 3). This only
+    affects VOs which support the ``begin-vo-dragging`` command.
 
 OSD
 ---
@@ -4377,6 +4471,12 @@ OSD
     Set the duration of ``osd-playing-msg`` in ms. If this is unset,
     ``osd-playing-msg`` stays on screen for the duration of ``osd-duration``.
 
+``--osd-playlist-entry=<title|filename|both>``
+    Whether to display the media title, filename, or both. If the
+    ``media-title`` is not available, it will display only the ``filename``.
+
+    Default: ``title``.
+
 ``--osd-bar-align-x=<-1-1>``
     Position of the OSD bar. -1 is far left, 0 is centered, 1 is far right.
     Fractional values (like 0.5) are allowed.
@@ -4392,14 +4492,13 @@ OSD
 ``--osd-bar-h=<0.1-50>``
     Height of the OSD bar, in percentage of the screen height (default: 3.125).
 
-``--osd-bar-border-size=<size>``
-    Size of the border of the OSD bar in scaled pixels (see ``--sub-font-size``
+``--osd-bar-outline-size=<size>``
+    Size of the outline of the OSD bar in scaled pixels (see ``--sub-font-size``
     for details).
 
-    Default: 0.5.
+    ``--osd-bar-border-size`` is an alias for ``--osd-bar-outline-size``.
 
-``--osd-back-color=<color>``
-    See ``--sub-color``. Color used for OSD text background.
+    Default: 0.5.
 
 ``--osd-blur=<0..20.0>``
     Gaussian blur factor applied to the OSD font border.
@@ -4411,14 +4510,26 @@ OSD
 ``--osd-italic=<yes|no>``
     Format text on italic.
 
-``--osd-border-color=<color>``
-    See ``--sub-color``. Color used for the OSD font border.
+``--osd-outline-color=<color>``
+    See ``--sub-color``. Color used for the OSD font outline.
 
-``--osd-border-size=<size>``
-    Size of the OSD font border in scaled pixels (see ``--sub-font-size``
-    for details). A value of 0 disables borders.
+    ``--osd-border-color`` is an alias for ``--osd-outline-color``.
+
+``--osd-back-color=<color>``
+    See ``--sub-color``. Color used for OSD text background.
+
+    ``--osd-shadow-color`` is an alias for ``--osd-back-color``.
+
+``--osd-outline-size=<size>``
+    Size of the OSD font outline in scaled pixels (see ``--sub-font-size``
+    for details). A value of 0 disables outlines.
+
+    ``--osd-border-size`` is an alias for ``--osd-outline-size``.
 
     Default: 3.
+
+``--osd-border-style=<outline-and-shadow|opaque-box|background-box>``
+    See ``--sub-border-style``. Style used for OSD text border.
 
 ``--osd-color=<color>``
     Specify the color used for OSD.
@@ -4470,13 +4581,11 @@ OSD
     are always in actual pixels. The effect is that changing the window size
     won't change the OSD font size.
 
-``--osd-shadow-color=<color>``
-    See ``--sub-color``. Color used for OSD shadow.
-
     .. note::
 
-        ignored when ``--osd-back-color`` is specified (or more exactly: when
-        that option is not set to completely transparent).
+        For scripts which draw user interface elements, it is recommended to
+        respect the value of this option when deciding whether the elements
+        are scaled with window size or not.
 
 ``--osd-shadow-offset=<size>``
     Displacement of the OSD shadow in scaled pixels (see
@@ -5689,6 +5798,33 @@ them.
     results, as can missing or incorrect display FPS information (see
     ``--display-fps-override``).
 
+``--egl-config-id=<ID>``
+    (EGL only)
+    Select EGLConfig with specific EGL_CONFIG_ID.
+    Rendering surfaces and contexts will be created using this EGLConfig.
+    You can use ``--msg-level=vo=trace`` to obtain a list of available configs.
+
+``--egl-output-format=<auto|rgb8|rgba8|rgb10|rgb10_a2|rgb16|rgba16|rgb16f|rgba16f|rgb32f|rgba32f>``
+    (EGL only)
+    Select a specific EGL output format to utilize for OpenGL rendering.
+    This option is mutually exclusive with ``--egl-config-id``.
+    "auto" is the default, which will pick the first usable config
+    based on the order given by the driver.
+
+    All formats are not available.
+    A fatal error is caused if an unavailable format is selected.
+
+    .. note::
+
+        There is no reliable API to query desktop bit depth in EGL.
+        You can manually set this option
+        according to the bit depth of your display.
+        This option also affects the auto-detection of ``--dither-depth``.
+
+    .. note::
+
+        Unlike  ``--d3d11-output-format``, this option also takes effect with ``--vo=gpu-next``.
+
 ``--vulkan-device=<device name|UUID>``
     The name or UUID of the Vulkan device to use for rendering and presentation. Use
     ``--vulkan-device=help`` to see the list of available devices and their
@@ -5868,6 +6004,11 @@ them.
 ``--wayland-edge-pixels-touch=<value>``
     Defines the size of an edge border (default: 32) to initiate client side
     resizes events in the wayland contexts with touch events.
+
+``--wayland-present=<yes|no>``
+    Enable the use of wayland's presentation time protocol for more accurate
+    frame presentation if it is supported by the compositor (default: ``yes``).
+    This only has an effect if ``--video-sync=display-...`` is being used.
 
 ``--spirv-compiler=<compiler>``
     Controls which compiler is used to translate GLSL to SPIR-V. This is
@@ -6427,6 +6568,11 @@ them.
     :system:   No manual syncing, depend on the layer mechanic and the next drawable
     :feedback: Same as precise but uses the presentation feedback core mechanism
 
+``--macos-menu-shortcuts=<yes|no>``
+    Enables the default menu bar shortcuts (default: yes). The menu bar shortcuts always take
+    precedence over any other shortcuts, they are not propagated to the mpv core and they can't be
+    used in config files like ``input.conf`` or script bindings.
+
 ``--android-surface-size=<WxH>``
     Set dimensions of the rendering surface used by the Android gpu context.
     Needs to be set by the embedding application if the dimensions change during
@@ -6442,6 +6588,9 @@ them.
     The value ``auto`` (the default) selects the GPU context with the default autoprobe
     order. You can also pass ``help`` to get a complete list of compiled in backends
     (sorted by the default autoprobe order).
+
+    Note that the default GPU context is subject to change, and must not be relied upon.
+    If a certain GPU context needs to be used, it must be explicitly specified.
 
     auto
         auto-select (default). Note that this context must be used alone and
@@ -6481,11 +6630,13 @@ them.
     macvk
         Vulkan on macOS with a metal surface through a translation layer (experimental)
 
-``--gpu-api=<type>``
-    Controls which type of graphics APIs will be accepted:
+``--gpu-api=<type1,type2,...[,]>``
+    Specify a priority list of accepted graphics APIs.
 
     auto
-        Use any available API (default)
+        Use any available API (default). Note that the default GPU API used for this
+        value is subject to change, and must not be relied upon. If a certain GPU API
+        needs to be used, it must be explicitly specified.
     opengl
         Allow only OpenGL (requires OpenGL 2.1+ or GLES 2.0+)
     vulkan
@@ -7110,10 +7261,10 @@ Miscellaneous
 -------------
 
 ``--display-tags=tag1,tags2,...``
-    Set the list of tags that should be displayed on the terminal. Tags that
-    are in the list, but are not present in the played file, will not be shown.
-    If a value ends with ``*``, all tags are matched by prefix (though there
-    is no general globbing). Just passing ``*`` essentially filtering.
+    Set the list of tags that should be displayed on the terminal and stats.
+    Tags that are in the list, but are not present in the played file, will not
+    be shown. If a value ends with ``*``, all tags are matched by prefix (though
+    there is no general globbing). Just passing ``*`` essentially filtering.
 
     The default includes a common list of tags, call mpv with ``--list-options``
     to see it.
@@ -7326,6 +7477,13 @@ Miscellaneous
 
     .. warning:: Using realtime priority can cause system lockup.
 
+``--media-controls=<yes|player|no>``
+    (Windows only)
+    Enable integration of media control interface SystemMediaTransportControls.
+    If set to ``player``, only the player will use the controls. Setting it to
+    ``yes`` will also enable the controls for libmpv integrations.
+    (default: ``player``)
+
 ``--force-media-title=<string>``
     Force the contents of the ``media-title`` property to this value. Useful
     for scripts which want to set a title, without overriding the user's
@@ -7382,18 +7540,28 @@ Miscellaneous
     See ``--audio-display`` how to control display of cover art (this can be
     used to disable cover art that is part of the file).
 
-``--cover-art-auto-exts=ext1,ext2,...``
-    Cover art extentions to try and match when using ``cover-art-auto``.
+``--image-exts=ext1,ext2,...``
+    Image file extentions to try to match when using ``--cover-art-auto``,
+    ``--autocreate-playlist`` or ``--directory-filter-types``.
+
+    This is a string list option. See `List Options`_ for details.
+    Use ``--help=image-exts`` to see default extensions.
+
+``--cover-art-whitelist=filename1,filename2,...``
+    Filenames to load as cover art, sorted by descending priority. They are
+    combined with the extensions in ``--image-exts``. This has no
+    effect if ``cover-art-auto`` is ``no``.
+
+    Default: ``AlbumArt,Album,cover,front,AlbumArtSmall,Folder,.folder,thumb``
 
     This is a string list option. See `List Options`_ for details.
 
-``--cover-art-whitelist=<no|yes>``
-    Whether to load files with a filename among "AlbumArt", "Album", "cover",
-    "front", "AlbumArtSmall", "Folder", ".folder", "thumb", and an extension in
-    ``--cover-art-auto-exts``, as cover art. This has no effect if
-    ``cover-art-auto`` is ``no``.
+``--video-exts=ext1,ext2,...``
+    Video file extentions to try to match when using ``--autocreate-playlist`` or
+    ``--directory-filter-types``.
 
-    Default: ``yes``.
+    This is a string list option. See `List Options`_ for details.
+    Use ``--help=video-exts`` to see default extensions.
 
 ``--autoload-files=<yes|no>``
     Automatically load/select external files (default: yes).

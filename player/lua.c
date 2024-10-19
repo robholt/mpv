@@ -82,6 +82,9 @@ static const char * const builtin_lua_scripts[][2] = {
     {"@auto_profiles.lua",
 #   include "player/lua/auto_profiles.lua.inc"
     },
+    {"@select.lua",
+#   include "player/lua/select.lua.inc"
+    },
     {0}
 };
 
@@ -481,6 +484,8 @@ static int load_lua(struct mp_script_args *args)
     r = 0;
 
 error_out:
+    if (ctx->lua_allocf)
+        lua_setallocf(L, ctx->lua_allocf, ctx->lua_alloc_ud);
     if (ctx->state)
         lua_close(ctx->state);
     talloc_free(ctx);

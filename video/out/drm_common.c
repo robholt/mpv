@@ -31,8 +31,10 @@
 
 #if HAVE_CONSIO_H
 #include <sys/consio.h>
-#else
+#elif HAVE_VT_H
 #include <sys/vt.h>
+#elif HAVE_WSDISPLAY_USL_IO_H
+#include <dev/wscons/wsdisplay_usl_io.h>
 #endif
 
 #include "drm_atomic.h"
@@ -81,8 +83,6 @@ const struct m_sub_options drm_conf = {
             .help = drm_connector_opt_help},
         {"drm-mode", OPT_STRING_VALIDATE(mode_spec, drm_validate_mode_opt),
             .help = drm_mode_opt_help},
-        {"drm-atomic", OPT_CHOICE(drm_atomic, {"no", 0}, {"auto", 1}),
-            .deprecation_message = "this option is deprecated: DRM Atomic is required"},
         {"drm-draw-plane", OPT_CHOICE(draw_plane,
             {"primary", DRM_OPTS_PRIMARY_PLANE},
             {"overlay", DRM_OPTS_OVERLAY_PLANE}),
@@ -104,7 +104,6 @@ const struct m_sub_options drm_conf = {
     },
     .defaults = &(const struct drm_opts) {
         .mode_spec = "preferred",
-        .drm_atomic = 1,
         .draw_plane = DRM_OPTS_PRIMARY_PLANE,
         .drmprime_video_plane = DRM_OPTS_OVERLAY_PLANE,
         .drm_format = DRM_OPTS_FORMAT_XRGB8888,

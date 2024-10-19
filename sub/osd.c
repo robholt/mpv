@@ -48,10 +48,14 @@ static const m_option_t style_opts[] = {
     {"font", OPT_STRING(font)},
     {"font-size", OPT_FLOAT(font_size), M_RANGE(1, 9000)},
     {"color", OPT_COLOR(color)},
-    {"border-color", OPT_COLOR(border_color)},
-    {"shadow-color", OPT_COLOR(shadow_color)},
+    {"outline-color", OPT_COLOR(outline_color)},
     {"back-color", OPT_COLOR(back_color)},
-    {"border-size", OPT_FLOAT(border_size)},
+    {"outline-size", OPT_FLOAT(outline_size)},
+    {"border-color", OPT_ALIAS("outline-color"), .alias_use_prefix = true},
+    {"shadow-color", OPT_ALIAS("back-color"), .alias_use_prefix = true},
+    {"border-style", OPT_CHOICE(border_style,
+        {"outline-and-shadow", 1}, {"opaque-box", 3}, {"background-box", 4})},
+    {"border-size", OPT_ALIAS("outline-size"), .alias_use_prefix = true},
     {"shadow-offset", OPT_FLOAT(shadow_offset)},
     {"spacing", OPT_FLOAT(spacing), M_RANGE(-10, 10)},
     {"margin-x", OPT_INT(margin_x), M_RANGE(0, 300)},
@@ -79,9 +83,10 @@ const struct m_sub_options osd_style_conf = {
         .font = "sans-serif",
         .font_size = 55,
         .color = {255, 255, 255, 255},
-        .border_color = {0, 0, 0, 255},
-        .shadow_color = {240, 240, 240, 128},
-        .border_size = 3,
+        .outline_color = {0, 0, 0, 255},
+        .back_color = {240, 240, 240, 128},
+        .border_style = 1,
+        .outline_size = 3,
         .shadow_offset = 0,
         .margin_x = 25,
         .margin_y = 22,
@@ -98,9 +103,10 @@ const struct m_sub_options sub_style_conf = {
         .font = "sans-serif",
         .font_size = 55,
         .color = {255, 255, 255, 255},
-        .border_color = {0, 0, 0, 255},
-        .shadow_color = {240, 240, 240, 128},
-        .border_size = 3,
+        .outline_color = {0, 0, 0, 255},
+        .back_color = {240, 240, 240, 128},
+        .border_style = 1,
+        .outline_size = 3,
         .shadow_offset = 0,
         .margin_x = 25,
         .margin_y = 22,
@@ -146,7 +152,6 @@ struct osd_state *osd_create(struct mpv_global *global)
     osd->objs[OSDTYPE_SUB]->is_sub = true;
     osd->objs[OSDTYPE_SUB2]->is_sub = true;
 
-    osd_init_backend(osd);
     return osd;
 }
 
@@ -328,6 +333,8 @@ struct sub_bitmap_list *osd_render(struct osd_state *osd, struct mp_osd_res res,
 {
     mp_mutex_lock(&osd->lock);
 
+    int64_t start_time = mp_time_ns();
+
     struct sub_bitmap_list *list = talloc_zero(NULL, struct sub_bitmap_list);
     list->change_id = 1;
     list->w = res.w;
@@ -382,6 +389,11 @@ struct sub_bitmap_list *osd_render(struct osd_state *osd, struct mp_osd_res res,
     // must not reset the flag when it happens.
     if (!(draw_flags & OSD_DRAW_SUB_FILTER))
         osd->want_redraw_notification = false;
+
+    double elapsed = MP_TIME_NS_TO_MS(mp_time_ns() - start_time);
+    bool slow = elapsed > 5;
+    mp_msg(osd->log, slow ? MSGL_DEBUG : MSGL_TRACE, "Spent %.3f ms in %s%s\n",
+           elapsed, __func__, slow ? " (slow!)" : "");
 
     mp_mutex_unlock(&osd->lock);
     return list;

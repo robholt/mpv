@@ -23,6 +23,10 @@ export LDFLAGS="-fstack-protector-strong"
 export PKG_CONFIG_SYSROOT_DIR="$prefix_dir"
 export PKG_CONFIG_LIBDIR="$PKG_CONFIG_SYSROOT_DIR/lib/pkgconfig"
 
+if [[ "$TARGET" == "i686-"* ]]; then
+    export WINEPATH="`$CC -print-file-name=`;/usr/$TARGET/lib"
+fi
+
 # autotools(-like)
 commonflags="--disable-static --enable-shared"
 
@@ -32,15 +36,18 @@ fam=x86_64
 cat >"$prefix_dir/crossfile" <<EOF
 [built-in options]
 buildtype = 'release'
-wrap_mode = 'nodownload'
+wrap_mode = 'nofallback'
 [binaries]
 c = ['ccache', '${CC}']
 cpp = ['ccache', '${CXX}']
 ar = '${AR}'
 strip = '${TARGET}-strip'
 pkgconfig = 'pkg-config'
+pkg-config = 'pkg-config'
 windres = '${TARGET}-windres'
 dlltool = '${TARGET}-dlltool'
+nasm = 'nasm'
+exe_wrapper = 'wine'
 [host_machine]
 system = 'windows'
 cpu_family = '${fam}'
@@ -51,6 +58,7 @@ EOF
 # CMake
 cmake_args=(
     -Wno-dev
+    -GNinja
     -DCMAKE_SYSTEM_PROCESSOR="${fam}"
     -DCMAKE_SYSTEM_NAME=Windows
     -DCMAKE_FIND_ROOT_PATH="$PKG_CONFIG_SYSROOT_DIR"
@@ -141,7 +149,7 @@ _ffmpeg () {
         --pkg-config=pkg-config --target-os=mingw32
         --enable-cross-compile --cross-prefix=$TARGET- --arch=${TARGET%%-*}
         --cc="$CC" --cxx="$CXX" $commonflags
-        --disable-{doc,programs,muxers,encoders}
+        --disable-{doc,programs}
         --enable-muxer=spdif --enable-encoder=mjpeg,png --enable-libdav1d
     )
     pkg-config vulkan && args+=(--enable-vulkan --enable-libshaderc)
@@ -194,8 +202,7 @@ _vulkan_headers_mark=include/vulkan/vulkan.h
 _vulkan_loader () {
     [ -d Vulkan-Loader ] || $gitclone https://github.com/KhronosGroup/Vulkan-Loader
     builddir Vulkan-Loader
-    cmake .. "${cmake_args[@]}" \
-        -DENABLE_WERROR=OFF -DUSE_GAS=ON
+    cmake .. "${cmake_args[@]}" -DUSE_GAS=ON
     makeplusinstall
     popd
 }
@@ -222,7 +229,7 @@ _freetype () {
 _freetype_mark=lib/libfreetype.dll.a
 
 _fribidi () {
-    local ver=1.0.14
+    local ver=1.0.15
     gettar "https://github.com/fribidi/fribidi/releases/download/v${ver}/fribidi-${ver}.tar.xz"
     builddir fribidi-${ver}
     meson setup .. --cross-file "$prefix_dir/crossfile" \
@@ -233,7 +240,7 @@ _fribidi () {
 _fribidi_mark=lib/libfribidi.dll.a
 
 _harfbuzz () {
-    local ver=8.4.0
+    local ver=9.0.0
     gettar "https://github.com/harfbuzz/harfbuzz/releases/download/${ver}/harfbuzz-${ver}.tar.xz"
     builddir harfbuzz-${ver}
     meson setup .. --cross-file "$prefix_dir/crossfile" \
@@ -246,8 +253,7 @@ _harfbuzz_mark=lib/libharfbuzz.dll.a
 _libass () {
     [ -d libass ] || $gitclone https://github.com/libass/libass.git
     builddir libass
-    [ -f ../configure ] || (cd .. && ./autogen.sh)
-    ../configure --host=$TARGET $commonflags
+    meson setup .. --cross-file "$prefix_dir/crossfile" -Ddefault_library=shared
     makeplusinstall
     popd
 }
@@ -292,8 +298,11 @@ meson setup $build --cross-file "$prefix_dir/crossfile" \
     --werror                   \
     -Dc_args="-Wno-error=deprecated -Wno-error=deprecated-declarations" \
     --buildtype debugoptimized \
-    -Dlibmpv=true -Dlua=luajit \
-    -D{shaderc,spirv-cross,d3d11}=enabled
+    --force-fallback-for=mujs  \
+    -Dmujs:werror=false        \
+    -Dmujs:default_library=static      \
+    -D{libmpv,tests}=true -Dlua=luajit \
+    -D{shaderc,spirv-cross,d3d11,javascript}=enabled
 
 meson compile -C $build
 

@@ -20,6 +20,14 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+// For FreeBSD where spa/param/audio/raw.h expects those to be defined
+#include "osdep/endian.h"
+#ifndef __BYTE_ORDER
+#define __BYTE_ORDER    BYTE_ORDER
+#define __LITTLE_ENDIAN LITTLE_ENDIAN
+#define __BIG_ENDIAN    BIG_ENDIAN
+#endif
+
 #include <pipewire/pipewire.h>
 #include <pipewire/global.h>
 #include <spa/param/audio/format-utils.h>
@@ -36,23 +44,12 @@
 #include "internal.h"
 #include "osdep/timer.h"
 
-#if !PW_CHECK_VERSION(0, 3, 50)
-static inline int pw_stream_get_time_n(struct pw_stream *stream, struct pw_time *time, size_t size) {
-    return pw_stream_get_time(stream, time);
-}
-#endif
-
-#if !PW_CHECK_VERSION(0, 3, 57)
-// Earlier versions segfault on zeroed hooks
-#define spa_hook_remove(hook) if ((hook)->link.prev) spa_hook_remove(hook)
-#endif
-
 #if !PW_CHECK_VERSION(1, 0, 4)
 static uint64_t pw_stream_get_nsec(struct pw_stream *stream)
 {
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return SPA_TIMESPEC_TO_NSEC(&ts);
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return SPA_TIMESPEC_TO_NSEC(&ts);
 }
 #endif
 
@@ -183,10 +180,8 @@ static void on_process(void *userdata)
     struct spa_buffer *buf = b->buffer;
 
     int nframes = buf->datas[0].maxsize / ao->sstride;
-#if PW_CHECK_VERSION(0, 3, 49)
     if (b->requested != 0)
         nframes = MPMIN(b->requested, nframes);
-#endif
 
     for (int i = 0; i < buf->n_datas; i++)
         data[i] = buf->datas[i].data;
@@ -201,12 +196,10 @@ static void on_process(void *userdata)
     end_time += MP_TIME_S_TO_NS(nframes) / ao->samplerate;
     end_time += MP_TIME_S_TO_NS(time.delay) * time.rate.num / time.rate.denom;
     end_time += MP_TIME_S_TO_NS(time.queued) / ao->samplerate;
-#if PW_CHECK_VERSION(0, 3, 50)
     end_time += MP_TIME_S_TO_NS(time.buffered) / ao->samplerate;
-#endif
     end_time -= pw_stream_get_nsec(p->stream) - time.now;
 
-    int samples = ao_read_data_nonblocking(ao, data, nframes, end_time);
+    int samples = ao_read_data(ao, data, nframes, end_time, NULL, false, false);
     b->size = samples;
 
     for (int i = 0; i < buf->n_datas; i++) {

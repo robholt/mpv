@@ -19,6 +19,10 @@ if get_option('optimization') != '0'
     swift_flags += '-O'
 endif
 
+if macos_10_15_4_features.allowed()
+    swift_flags += ['-D', 'HAVE_MACOS_10_15_4_FEATURES']
+endif
+
 if macos_11_features.allowed()
     swift_flags += ['-D', 'HAVE_MACOS_11_FEATURES']
 endif
@@ -47,7 +51,8 @@ swift_compile = [swift_prog, swift_flags, '-module-name', 'swift',
                  '-emit-objc-header-path', '@OUTPUT1@', '-o', '@OUTPUT2@',
                  '@INPUT@', '-I.', '-I' + source_root,
                  '-I' + libplacebo.get_variable('includedir',
-                            default_value: source_root / 'subprojects' / 'libplacebo' / 'src' / 'include')]
+                            default_value: source_root / 'subprojects' / 'libplacebo' / 'src' / 'include'),
+                 '-I' + libavutil.get_variable('includedir')]
 
 swift_targets = custom_target('swift_targets',
     input: swift_sources,

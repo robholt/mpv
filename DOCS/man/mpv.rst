@@ -116,6 +116,9 @@ Q
 / and *
     Decrease/increase volume.
 
+KP_DIVIDE and KP_MULTIPLY
+    Decrease/increase volume.
+
 9 and 0
     Decrease/increase volume.
 
@@ -178,8 +181,8 @@ u
     style. See ``--sub-ass-override`` for more info.
 
 V
-    Toggle subtitle VSFilter aspect compatibility mode. See
-    ``--sub-ass-vsfilter-aspect-compat`` for more info.
+    Cycle through which video data gets used for ASS rendering.
+    See ``--sub-ass-use-video-data`` for more info.
 
 r and R
     Move subtitles up/down. The ``t`` key does the same as ``R`` currently, but
@@ -269,6 +272,46 @@ Alt+2 (and Command+2 on macOS)
 
 Command + f (macOS only)
     Toggle fullscreen (see also ``--fs``).
+
+(The following keybindings open a selector in the console that lets you choose
+from a list of items by typing part of the desired item and/or by navigating
+them with keybindings: ``Down`` and ``Ctrl+n`` go down, ``Up`` and ``Ctrl+p`` go
+up, ``Page down`` and ``Ctrl+f`` scroll down one page, and ``Page up`` and
+``Ctrl+b`` scroll up one page.)
+
+g-p
+    Select a playlist entry.
+
+g-s
+    Select a subtitle track.
+
+g-S
+    Select a secondary subtitle track.
+
+g-a
+    Select an audio track.
+
+g-v
+    Select a video track.
+
+g-t
+    Select a track of any type.
+
+g-c
+    Select a chapter.
+
+g-l
+    Select a subtitle line to seek to. This currently requires ``ffmpeg`` in
+    ``PATH``, or in the same folder as mpv on Windows.
+
+g-d
+    Select an audio device.
+
+g-b
+    Select a defined input binding.
+
+g-r
+    Show the values of all properties.
 
 (The following keys are valid if you have a keyboard with multimedia keys.)
 
@@ -631,6 +674,8 @@ Options of this type can be changed at runtime using the ``change-list``
 command, which takes the suffix (without the ``-``) as separate operation
 parameter.
 
+An object settings list can hold up to 100 elements.
+
 CONFIGURATION FILES
 ===================
 
@@ -992,17 +1037,17 @@ There are three choices for using mpv from other programs or scripts:
 
        Your code should work even if you pass ``--terminal=no``. Do not attempt
        to simulate user input by sending terminal control codes to mpv's stdin.
-       If you need interactive control, using ``--input-ipc-server`` is
-       recommended. This gives you access to the `JSON IPC`_  over unix domain
-       sockets (or named pipes on Windows).
+       If you need interactive control, using ``--input-ipc-server`` or
+       ``--input-ipc-client`` is recommended. This gives you access to the
+       `JSON IPC`_  over unix domain sockets (or named pipes on Windows).
 
        Depending on what you do, passing ``--no-config`` or ``--config-dir`` may
        be a good idea to avoid conflicts with the normal mpv user configuration
        intended for CLI playback.
 
-       Using ``--input-ipc-server`` is also suitable for purposes like remote
-       control (however, the IPC protocol itself is not "secure" and not
-       intended to be so).
+       Using ``--input-ipc-server`` or ``--input-ipc-client`` is also suitable for
+       purposes like remote control (however, the IPC protocol itself is not
+       "secure" and not intended to be so).
 
     2. Using libmpv. This is generally recommended when mpv is used as playback
        backend for a completely different application. The provided C API is

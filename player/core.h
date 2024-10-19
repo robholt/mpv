@@ -194,7 +194,7 @@ struct ao_chain {
     double start_pts;
     bool start_pts_known;
 
-    bool audio_started;
+    bool delaying_audio_start;
 
     struct track *track;
     struct mp_pin *filter_src;
@@ -232,6 +232,7 @@ extern const int num_ptracks[STREAM_TYPE_COUNT];
 typedef struct MPContext {
     bool initialized;
     bool is_cli;
+    mp_thread core_thread;
     struct mpv_global *global;
     struct MPOpts *opts;
     struct mp_log *log;
@@ -420,6 +421,9 @@ typedef struct MPContext {
     int max_frames;
     bool playing_msg_shown;
 
+    int remaining_file_loops;
+    int remaining_ab_loops;
+
     bool paused_for_cache;
     bool demux_underrun;
     double cache_stop_time;
@@ -436,7 +440,7 @@ typedef struct MPContext {
 
     struct mp_ipc_ctx *ipc_ctx;
 
-    int64_t builtin_script_ids[5];
+    int64_t builtin_script_ids[6];
 
     mp_mutex abort_lock;
 
@@ -561,6 +565,7 @@ void update_window_title(struct MPContext *mpctx, bool force);
 void error_on_track(struct MPContext *mpctx, struct track *track);
 int stream_dump(struct MPContext *mpctx, const char *source_filename);
 double get_track_seek_offset(struct MPContext *mpctx, struct track *track);
+bool str_in_list(bstr str, char **list);
 
 // osd.c
 void set_osd_bar(struct MPContext *mpctx, int type,
@@ -591,7 +596,6 @@ double get_time_length(struct MPContext *mpctx);
 double get_start_time(struct MPContext *mpctx, int dir);
 double get_current_time(struct MPContext *mpctx);
 double get_playback_time(struct MPContext *mpctx);
-int get_percent_pos(struct MPContext *mpctx);
 double get_current_pos_ratio(struct MPContext *mpctx, bool use_range);
 int get_current_chapter(struct MPContext *mpctx);
 char *chapter_display_name(struct MPContext *mpctx, int chapter);

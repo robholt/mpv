@@ -22,6 +22,7 @@
 
 import pathlib
 import sys
+import textwrap
 from shutil import which
 from subprocess import check_output
 
@@ -33,16 +34,19 @@ def add_new_entries(docs_dir, out, git):
             timestamp = check_output([git, "log", "--format=%ct", "-n", "1", "--",
                                       f], encoding="UTF-8")
             if timestamp:
-                files.append((f, timestamp))
+                content = f.read_text()
+                files.append(content)
             else:
                 print(f"Skipping file not tracked by git: {f.name}")
 
-    files.sort(key=lambda x: x[1])
-    for file in files:
-        with open(file[0].resolve(), "r") as f:
-            for line in f:
-               line =  "    - " + line.rstrip()
-               out.write(line + "\n")
+    # Sort the changes by "severity", which roughly corresponds to
+    # alphabetical order by accident (e.g. remove > deprecate > change > add)
+    for file in reversed(sorted(files)):
+        for line in file.splitlines():
+            line = textwrap.fill(line.rstrip(), width=80,
+                                  initial_indent="    - ",
+                                  subsequent_indent="      ")
+            out.write(line + "\n")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -74,6 +78,7 @@ if __name__ == "__main__":
 
     ver_line = " --- mpv 0." + major_version + ".0 ---"
     next_ver_line = " --- mpv 0." + str(int(major_version) + 1) + ".0 ---"
+    found = False
     with open(interface_changes, "w", newline="\n") as f:
         for line in lines:
             if line == ver_line:
@@ -81,3 +86,6 @@ if __name__ == "__main__":
             f.write(line + "\n")
             if line == ver_line:
                 add_new_entries(docs_dir, f, git)
+                found = True
+    if not found:
+        print(f"Nothing changed! The following line was not found:\n{ver_line}")

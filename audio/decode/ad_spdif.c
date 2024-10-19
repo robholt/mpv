@@ -25,6 +25,7 @@
 #include <libavutil/opt.h>
 
 #include "audio/aframe.h"
+#include "audio/chmap_avchannel.h"
 #include "audio/format.h"
 #include "common/av_common.h"
 #include "common/codecs.h"
@@ -37,14 +38,9 @@
 
 #define OUTBUF_SIZE 65536
 
-#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(60, 26, 100)
-#define AV_PROFILE_UNKNOWN FF_PROFILE_UNKNOWN
-#define AV_PROFILE_DTS_HD_HRA FF_PROFILE_DTS_HD_HRA
-#define AV_PROFILE_DTS_HD_MA FF_PROFILE_DTS_HD_MA
-#endif
-
 struct spdifContext {
     struct mp_log   *log;
+    struct mp_codec_params *codec;
     enum AVCodecID   codec_id;
     AVFormatContext *lavf_ctx;
     AVPacket        *avpkt;
@@ -59,7 +55,7 @@ struct spdifContext {
     struct mp_decoder public;
 };
 
-#if LIBAVCODEC_VERSION_MAJOR < 61
+#if LIBAVFORMAT_VERSION_MAJOR < 61
 static int write_packet(void *p, uint8_t *buf, int buf_size)
 #else
 static int write_packet(void *p, const uint8_t *buf, int buf_size)
@@ -117,15 +113,17 @@ static void determine_codec_params(struct mp_filter *da, AVPacket *pkt,
 
         uint8_t *d = NULL;
         int s = 0;
-        av_parser_parse2(parser, ctx, &d, &s, pkt->data, pkt->size, 0, 0, 0);
-        *out_profile = profile = ctx->profile;
-        *out_rate = ctx->sample_rate;
+        if (av_parser_parse2(parser, ctx, &d, &s, pkt->data, pkt->size, 0, 0, 0) > 0) {
+            *out_profile = profile = ctx->profile;
+            *out_rate = ctx->sample_rate;
+            spdif_ctx->codec->codec_profile = avcodec_profile_name(spdif_ctx->codec_id, profile);
+        }
 
         avcodec_free_context(&ctx);
         av_parser_close(parser);
     }
 
-    if (profile != AV_PROFILE_UNKNOWN  || spdif_ctx->codec_id != AV_CODEC_ID_DTS)
+    if (profile != AV_PROFILE_UNKNOWN)
         return;
 
     const AVCodec *codec = avcodec_find_decoder(spdif_ctx->codec_id);
@@ -150,6 +148,14 @@ static void determine_codec_params(struct mp_filter *da, AVPacket *pkt,
 
     *out_profile = profile = ctx->profile;
     *out_rate = ctx->sample_rate;
+
+    struct mp_codec_params *c = spdif_ctx->codec;
+    c->codec_profile = av_get_profile_name(ctx->codec, ctx->profile);
+    if (!c->codec_profile)
+        c->codec_profile = avcodec_profile_name(ctx->codec_id, ctx->profile);
+    c->codec = ctx->codec_descriptor->name;
+    c->codec_desc = ctx->codec_descriptor->long_name;
+    mp_chmap_from_av_layout(&c->channels, &ctx->ch_layout);
 
 done:
     av_frame_free(&frame);
@@ -221,6 +227,8 @@ static int init_filter(struct mp_filter *da)
     case AV_CODEC_ID_DTS: {
         bool is_hd = profile == AV_PROFILE_DTS_HD_HRA ||
                      profile == AV_PROFILE_DTS_HD_MA  ||
+                     profile == AV_PROFILE_DTS_HD_MA_X ||
+                     profile == AV_PROFILE_DTS_HD_MA_X_IMAX ||
                      profile == AV_PROFILE_UNKNOWN;
 
         // Apparently, DTS-HD over SPDIF is specified to be 7.1 (8 channels)
@@ -321,6 +329,7 @@ static void ad_spdif_process(struct mp_filter *da)
         if (init_filter(da) < 0)
             goto done;
         assert(spdif_ctx->avpkt);
+        assert(spdif_ctx->lavf_ctx);
     }
 
     spdif_ctx->out_buffer_len  = 0;
@@ -432,6 +441,7 @@ static struct mp_decoder *create(struct mp_filter *parent,
 
     struct spdifContext *spdif_ctx = da->priv;
     spdif_ctx->log = da->log;
+    spdif_ctx->codec = codec;
     spdif_ctx->pool = mp_aframe_pool_create(spdif_ctx);
     spdif_ctx->public.f = da;
 
@@ -445,6 +455,10 @@ static struct mp_decoder *create(struct mp_filter *parent,
         talloc_free(da);
         return NULL;
     }
+
+    const AVCodecDescriptor *desc = avcodec_descriptor_get(spdif_ctx->codec_id);
+    if (desc)
+        codec->codec_desc = desc->long_name;
 
     return &spdif_ctx->public;
 }

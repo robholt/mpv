@@ -18,6 +18,7 @@ local o = {
     key_page_2 = "2",
     key_page_3 = "3",
     key_page_4 = "4",
+    key_page_5 = "5",
     key_page_0 = "0",
     -- For pages which support scrolling
     key_scroll_up = "UP",
@@ -29,9 +30,10 @@ local o = {
     redraw_delay = 1,                -- acts as duration in the toggling case
     ass_formatting = true,
     persistent_overlay = false,      -- whether the stats can be overwritten by other output
-    print_perfdata_passes = false,   -- when true, print the full information about all passes
-    filter_params_max_length = 100,  -- a filter list longer than this many characters will be shown one filter per line instead
-    show_frame_info = false,          -- whether to show the current frame info
+    filter_params_max_length = 100,  -- show one filter per line if list exceeds this length
+    file_tag_max_length = 128,       -- only show file tags shorter than this length in bytes
+    file_tag_max_count = 16,         -- only show the first x file tags
+    show_frame_info = false,         -- whether to show the current frame info
     term_width_limit = -1,           -- overwrites the terminal width
     term_height_limit = -1,          -- overwrites the terminal height
     debug = false,
@@ -60,7 +62,7 @@ local o = {
     shadow_y_offset = 0.0,
     shadow_color = "",
     alpha = "11",
-    vidscale = true,
+    vidscale = "auto",
 
     -- Custom header for ASS tags to style the text output.
     -- Specifying this will ignore the text style values above and just
@@ -113,7 +115,7 @@ local recorder = nil
 -- Timer used for redrawing (toggling) and clearing the screen (oneshot)
 local display_timer = nil
 -- Timer used to update cache stats.
-local cache_recorder_timer = nil
+local cache_recorder_timer
 -- Current page and <page key>:<page function> mappings
 local curr_page = o.key_page_1
 local pages = {}
@@ -152,7 +154,7 @@ local function no_ASS(t)
 end
 
 
-local function b(t)
+local function bold(t)
     return o.b1 .. t .. o.b0
 end
 
@@ -233,7 +235,7 @@ local function generate_graph(values, i, len, v_max, v_avg, scale, x_tics)
     local s = {format("m 0 0 n %f %f l ", x, y_max - scale * values[i])}
     i = ((i - 2) % len) + 1
 
-    for p = 1, len - 1 do
+    for _ = 1, len - 1 do
         if values[i] then
             x = x - x_tics
             s[#s+1] = format("%f %f ", x, y_max - scale * values[i])
@@ -244,8 +246,10 @@ local function generate_graph(values, i, len, v_max, v_avg, scale, x_tics)
     s[#s+1] = format("%f %f %f %f", x, y_max, 0, y_max)
 
     local bg_box = format("{\\bord%f}{\\3c&H%s&}{\\1c&H%s&}m 0 %f l %f %f %f 0 0 0",
-                          plot_bg_border_width, o.plot_bg_border_color, o.plot_bg_color, y_max, x_max, y_max, x_max)
-    return format("%s{\\rDefault}{\\pbo%f}{\\shad0}{\\alpha&H00}{\\p1}%s{\\p0}{\\bord0}{\\1c&H%s}{\\p1}%s{\\p0}%s",
+                          plot_bg_border_width, o.plot_bg_border_color, o.plot_bg_color,
+                          y_max, x_max, y_max, x_max)
+    return format("%s{\\rDefault}{\\pbo%f}{\\shad0}{\\alpha&H00}{\\p1}%s{\\p0}" ..
+                  "{\\bord0}{\\1c&H%s}{\\p1}%s{\\p0}%s",
                   o.prefix_sep, y_offset, bg_box, o.plot_color, table.concat(s), text_style())
 end
 
@@ -260,8 +264,11 @@ local function append(s, str, attr)
     attr.suffix = attr.suffix or ""
     attr.prefix = attr.prefix or ""
     attr.no_prefix_markup = attr.no_prefix_markup or false
-    attr.prefix = attr.no_prefix_markup and attr.prefix or b(attr.prefix)
-    s[#s+1] = format("%s%s%s%s%s%s", attr.nl, attr.indent,
+    attr.prefix = attr.no_prefix_markup and attr.prefix or bold(attr.prefix)
+
+    local index = #s + (attr.nl == "" and 0 or 1)
+    s[index] = s[index] or ""
+    s[index] = s[index] .. format("%s%s%s%s%s%s", attr.nl, attr.indent,
                      attr.prefix, attr.prefix_sep, no_ASS(str), attr.suffix)
     return true
 end
@@ -310,16 +317,11 @@ local function scroll_hint(search)
     return format(" {\\fs%s}%s{\\fs%s}", font_size * 0.66, hint, font_size)
 end
 
-local function append_perfdata(header, s, dedicated_page, print_passes)
+local function append_perfdata(header, s, dedicated_page)
     local vo_p = mp.get_property_native("vo-passes")
     if not vo_p then
         return
     end
-
-    local ds = mp.get_property_bool("display-sync-active", false)
-    local target_fps = ds and mp.get_property_number("display-fps", 0)
-                       or mp.get_property_number("container-fps", 0)
-    if target_fps > 0 then target_fps = 1 / target_fps * 1e9 end
 
     -- Sums of all last/avg/peak values
     local last_s, avg_s, peak_s = {}, {}, {}
@@ -346,32 +348,42 @@ local function append_perfdata(header, s, dedicated_page, print_passes)
         end
         -- Calculate font weight. 100 is minimum, 400 is normal, 700 bold, 900 is max
         local w = (700 * math.sqrt(i)) + 200
-        return format("{\\b%d}%2d%%{\\b0}", w, i * 100)
+        if not o.use_ass then
+            local str = format("%3d%%", i * 100)
+            return w >= 700 and bold(str) or str
+        end
+        return format("{\\b%d}%3d%%{\\b0}", w, i * 100)
     end
+
+    local font_small = o.use_ass and format("{\\fs%s}", font_size * 0.66) or ""
+    local font_normal = o.use_ass and format("{\\fs%s}", font_size) or ""
+    local font = o.use_ass and format("{\\fn%s}", o.font) or ""
+    local font_mono = o.use_ass and format("{\\fn%s}", o.font_mono) or ""
+    local indent = o.use_ass and "\\h" or " "
 
     -- ensure that the fixed title is one element and every scrollable line is
     -- also one single element.
     local h = dedicated_page and header or s
-    h[#h+1] = format("%s%s%s%s{\\fs%s}%s{\\fs%s}%s",
+    h[#h+1] = format("%s%s%s%s%s%s%s%s",
                      dedicated_page and "" or o.nl, dedicated_page and "" or o.indent,
-                     b("Frame Timings:"), o.prefix_sep, font_size * 0.66,
-                     "(last/average/peak μs)", font_size,
+                     bold("Frame Timings:"), o.prefix_sep, font_small,
+                     "(last/average/peak μs)", font_normal,
                      dedicated_page and scroll_hint() or "")
 
     for _,frame in ipairs(sorted_keys(vo_p)) do  -- ensure fixed display order
         local data = vo_p[frame]
-        local f = "%s%s%s{\\fn%s}%s / %s / %s %s%s{\\fn%s}%s%s%s"
+        local f = "%s%s%s%s%s / %s / %s %s%s%s%s%s%s"
 
-        if print_passes then
+        if dedicated_page then
             s[#s+1] = format("%s%s%s:", o.nl, o.indent,
-                             b(frame:gsub("^%l", string.upper)))
+                             bold(frame:gsub("^%l", string.upper)))
 
             for _, pass in ipairs(data) do
                 s[#s+1] = format(f, o.nl, o.indent, o.indent,
-                                 o.font_mono, pp(pass["last"]),
+                                 font_mono, pp(pass["last"]),
                                  pp(pass["avg"]), pp(pass["peak"]),
-                                 o.prefix_sep .. "\\h\\h", p(pass["last"], last_s[frame]),
-                                 o.font, o.prefix_sep, o.prefix_sep, pass["desc"])
+                                 o.prefix_sep .. indent, p(pass["last"], last_s[frame]),
+                                 font, o.prefix_sep, o.prefix_sep, pass["desc"])
 
                 if o.plot_perfdata and o.use_ass then
                     -- use the same line that was already started for this iteration
@@ -384,14 +396,14 @@ local function append_perfdata(header, s, dedicated_page, print_passes)
 
             -- Print sum of timing values as "Total"
             s[#s+1] = format(f, o.nl, o.indent, o.indent,
-                             o.font_mono, pp(last_s[frame]),
+                             font_mono, pp(last_s[frame]),
                              pp(avg_s[frame]), pp(peak_s[frame]),
-                             o.prefix_sep, b("Total"), o.font, "", "", "")
+                             o.prefix_sep, bold("Total"), font, "", "", "")
         else
             -- for the simplified view, we just print the sum of each pass
-            s[#s+1] = format(f, o.nl, o.indent, o.indent, o.font_mono,
+            s[#s+1] = format(f, o.nl, o.indent, o.indent, font_mono,
                             pp(last_s[frame]), pp(avg_s[frame]), pp(peak_s[frame]),
-                            "", "", o.font, o.prefix_sep, o.prefix_sep,
+                            "", "", font, o.prefix_sep, o.prefix_sep,
                             frame:gsub("^%l", string.upper))
         end
     end
@@ -400,8 +412,8 @@ end
 -- command prefix tokens to strip - includes generic property commands
 local cmd_prefixes = {
     osd_auto=1, no_osd=1, osd_bar=1, osd_msg=1, osd_msg_bar=1, raw=1, sync=1,
-    async=1, expand_properties=1, repeatable=1, set=1, add=1, multiply=1,
-    toggle=1, cycle=1, cycle_values=1, ["!reverse"]=1, change_list=1,
+    async=1, expand_properties=1, repeatable=1, nonrepeatable=1, set=1, add=1,
+    multiply=1, toggle=1, cycle=1, cycle_values=1, ["!reverse"]=1, change_list=1,
 }
 -- commands/writable-properties prefix sub-words (followed by -) to strip
 local name_prefixes = {
@@ -515,7 +527,7 @@ local function get_kbinfo_lines()
     local spre = term and kspaces .. "   "
                        or format("{\\q2\\fn%s}%s   {\\fn%s}{\\fs%d\\u1}",
                                  o.font_mono, kspaces, o.font, 1.3*font_size)
-    local spost = term and "" or format("{\\u0\\fs%d}", font_size)
+    local spost = term and "" or format("{\\u0\\fs%d}%s", font_size, text_style())
 
     -- create the display lines
     local info_lines = {}
@@ -539,7 +551,7 @@ local function append_general_perfdata(s)
         append(s, data.text or data.value, {prefix="["..tostring(i).."] "..data.name..":"})
 
         if o.plot_perfdata and o.use_ass and data.value then
-            buf = perf_buffers[data.name]
+            local buf = perf_buffers[data.name]
             if not buf then
                 buf = {0, pos = 1, len = 50, max = 0}
                 perf_buffers[data.name] = buf
@@ -574,13 +586,17 @@ local function append_display_sync(s)
         local ratio_graph = ""
         local jitter_graph = ""
         if o.plot_vsync_ratio then
-            ratio_graph = generate_graph(vsratio_buf, vsratio_buf.pos, vsratio_buf.len, vsratio_buf.max, nil, 0.8, 1)
+            ratio_graph = generate_graph(vsratio_buf, vsratio_buf.pos,
+                                         vsratio_buf.len, vsratio_buf.max, nil, 0.8, 1)
         end
         if o.plot_vsync_jitter then
-            jitter_graph = generate_graph(vsjitter_buf, vsjitter_buf.pos, vsjitter_buf.len, vsjitter_buf.max, nil, 0.8, 1)
+            jitter_graph = generate_graph(vsjitter_buf, vsjitter_buf.pos,
+                                          vsjitter_buf.len, vsjitter_buf.max, nil, 0.8, 1)
         end
-        append_property(s, "vsync-ratio", {prefix="VSync Ratio:", suffix=o.prefix_sep .. ratio_graph})
-        append_property(s, "vsync-jitter", {prefix="VSync Jitter:", suffix=o.prefix_sep .. jitter_graph})
+        append_property(s, "vsync-ratio", {prefix="VSync Ratio:",
+                                           suffix=o.prefix_sep .. ratio_graph})
+        append_property(s, "vsync-jitter", {prefix="VSync Jitter:",
+                                            suffix=o.prefix_sep .. jitter_graph})
     else
         -- Since no graph is needed we can print ratio/jitter on the same line and save some space
         local vr = append_property(s, "vsync-ratio", {prefix="VSync Ratio:"})
@@ -627,7 +643,7 @@ local function append_filters(s, prop, prefix)
             local sep = o.nl .. o.indent .. o.indent
             ret = sep .. table.concat(filters, sep)
         end
-        s[#s+1] = o.nl .. o.indent .. b(prefix) .. o.prefix_sep .. ret
+        s[#s+1] = o.nl .. o.indent .. bold(prefix) .. o.prefix_sep .. ret
     end
 end
 
@@ -637,11 +653,24 @@ local function add_header(s)
 end
 
 
-local function add_file(s)
+local function add_file(s, print_cache, print_tags)
     append(s, "", {prefix="File:", nl="", indent=""})
     append_property(s, "filename", {prefix_sep="", nl="", indent=""})
-    if not (mp.get_property_osd("filename") == mp.get_property_osd("media-title")) then
+    if mp.get_property_osd("filename") ~= mp.get_property_osd("media-title") then
         append_property(s, "media-title", {prefix="Title:"})
+    end
+
+    if print_tags then
+        local tags = mp.get_property_native("display-tags")
+        local tags_displayed = 0
+        for _, tag in ipairs(tags) do
+            local value = mp.get_property("metadata/by-key/" .. tag)
+            if tag ~= "Title" and tags_displayed < o.file_tag_max_count
+               and value and value:len() < o.file_tag_max_length then
+                append(s, value, {prefix=string.gsub(tag, "_", " ") .. ":"})
+                tags_displayed = tags_displayed + 1
+            end
+        end
     end
 
     local editions = mp.get_property_number("editions")
@@ -668,6 +697,10 @@ local function add_file(s)
     append_property(s, "file-format", {prefix="Format/Protocol:",
                                        nl=fs and "" or o.nl,
                                        indent=fs and o.prefix_sep .. o.prefix_sep})
+
+    if not print_cache then
+        return
+    end
 
     local demuxer_cache = mp.get_property_native("demuxer-cache-state", {})
     if demuxer_cache["fw-bytes"] then
@@ -844,7 +877,7 @@ end
 local function append_fps(s, prop, eprop)
     local fps = mp.get_property_osd(prop)
     local efps = mp.get_property_osd(eprop)
-    local single = fps ~= "" and efps ~= "" and fps == efps
+    local single = eprop == "" or (fps ~= "" and efps ~= "" and fps == efps)
     local unit = prop == "display-fps" and " Hz" or " fps"
     local suffix = single and "" or " (specified)"
     local esuffix = single and "" or " (estimated)"
@@ -871,7 +904,7 @@ local function add_video_out(s)
         return
     end
 
-    append(s, "", {prefix=o.nl .. o.nl .. "Display:", nl="", indent=""})
+    append(s, "", {prefix="Display:", nl=o.nl .. o.nl, indent=""})
     append(s, vo, {prefix_sep="", nl="", indent=""})
     append_property(s, "display-names", {prefix_sep="", prefix="(", suffix=")",
                                          no_prefix_markup=true, nl="", indent=" "})
@@ -884,7 +917,7 @@ local function add_video_out(s)
         append_property(s, "frame-drop-count", {suffix=" (output)", nl="", indent=""})
     end
     append_display_sync(s)
-    append_perfdata(nil, s, false, o.print_perfdata_passes)
+    append_perfdata(nil, s, false)
 
     if mp.get_property_native("deinterlace-active") then
         append_property(s, "deinterlace", {prefix="Deinterlacing:"})
@@ -897,7 +930,7 @@ local function add_video_out(s)
 
     local od = mp.get_property_native("osd-dimensions")
     local rt = mp.get_property_native("video-target-params")
-    r = rt or {}
+    local r = rt or {}
 
     -- Add window scale
     r["s"] = scale
@@ -929,9 +962,10 @@ local function add_video(s)
         return
     end
 
-    append(s, "", {prefix=o.nl .. o.nl .. "Video:", nl="", indent=""})
     local track = mp.get_property_native("current-tracks/video")
-    if track and append(s, track["codec-desc"], {prefix_sep="", nl="", indent=""}) then
+    if track then
+        append(s, "", {prefix=track.image and "Image:" or "Video:", nl=o.nl .. o.nl, indent=""})
+        append(s, track["codec-desc"], {prefix_sep="", nl="", indent=""})
         append(s, track["codec-profile"], {prefix="[", nl="", indent=" ", prefix_sep="",
                no_prefix_markup=true, suffix="]"})
         if track["codec"] ~= track["decoder"] then
@@ -969,7 +1003,7 @@ local function add_video(s)
     end
     append_img_params(s, r, ro)
     append_hdr(s, ro)
-    append_property(s, "packet-video-bitrate", {prefix="Bitrate:", suffix=" kbps"})
+    append_property(s, "video-bitrate", {prefix="Bitrate:"})
     append_filters(s, "vf", "Filters:")
 end
 
@@ -983,22 +1017,22 @@ local function add_audio(s)
         return
     end
 
-    local merge = function(r, ro, prop)
-        local a = r[prop] or ro[prop]
-        local b = ro[prop] or r[prop]
+    local merge = function(rr, rro, prop)
+        local a = rr[prop] or rro[prop]
+        local b = rro[prop] or rr[prop]
         return (a == b or a == nil) and a or (a .. " ➜ " .. b)
     end
 
-    append(s, "", {prefix=o.nl .. o.nl .. "Audio:", nl="", indent=""})
+    append(s, "", {prefix="Audio:", nl=o.nl .. o.nl, indent=""})
     local track = mp.get_property_native("current-tracks/audio")
     if track then
         append(s, track["codec-desc"], {prefix_sep="", nl="", indent=""})
+        append(s, track["codec-profile"], {prefix="[", nl="", indent=" ", prefix_sep="",
+               no_prefix_markup=true, suffix="]"})
         if track["codec"] ~= track["decoder"] then
             append(s, track["decoder"], {prefix="[", nl="", indent=" ", prefix_sep="",
                    no_prefix_markup=true, suffix="]"})
         end
-        append(s, track["codec-profile"], {prefix="[", nl="", indent=" ", prefix_sep="",
-               no_prefix_markup=true, suffix="]"})
     end
     append_property(s, "current-ao", {prefix="AO:", nl="",
                                       indent=o.prefix_sep .. o.prefix_sep})
@@ -1014,7 +1048,7 @@ local function add_audio(s)
     append(s, merge(r, ro, "format"), {prefix="Format:", nl=cc and "" or o.nl,
                             indent=cc and o.prefix_sep .. o.prefix_sep})
     append(s, merge(r, ro, "samplerate"), {prefix="Sample Rate:", suffix=" Hz"})
-    append_property(s, "packet-audio-bitrate", {prefix="Bitrate:", suffix=" kbps"})
+    append_property(s, "audio-bitrate", {prefix="Bitrate:"})
     append_filters(s, "af", "Filters:")
 end
 
@@ -1046,7 +1080,7 @@ end
 --   printable codepoints occupy one terminal cell (we don't have wcwidth)
 --   tabstops are 8, 16, 24..., and the output starts at 0 or a tabstop
 -- note: if maxwidth <= 2 and s doesn't fit: the result is "..." (more than 2)
-function term_ellipsis(s, maxwidth)
+local function term_ellipsis(s, maxwidth)
     local TAB, ESC, SGR_END = 9, 27, ("m"):byte()
     local width, ellipsis = 0, "..."
     local fit_len, in_sgr
@@ -1132,7 +1166,7 @@ local function default_stats()
     local stats = {}
     eval_ass_formatting()
     add_header(stats)
-    add_file(stats)
+    add_file(stats, true, false)
     add_video_out(stats)
     add_video(stats)
     add_audio(stats)
@@ -1144,7 +1178,7 @@ local function vo_stats()
     local header, content = {}, {}
     eval_ass_formatting()
     add_header(header)
-    append_perfdata(header, content, true, true)
+    append_perfdata(header, content, true)
     header = {table.concat(header)}
     return finalize_page(header, content, true)
 end
@@ -1163,6 +1197,129 @@ local function keybinding_info(after_scroll, bindlist)
     end
 
     return finalize_page(header, kbinfo_lines, not bindlist)
+end
+
+local function float2rational(x)
+    local max_den = 100000
+    local m00, m01, m10, m11 = 1, 0, 0, 1
+    local a = math.floor(x)
+    local frac = x - a
+    while m10 * a + m11 <= max_den do
+        local temp = m00 * a + m01
+        m01 = m00
+        m00 = temp
+        temp = m10 * a + m11
+        m11 = m10
+        m10 = temp
+
+        if frac == 0 then
+            break
+        end
+
+        x = 1 / frac
+        a = math.floor(x)
+        frac = x - a
+    end
+    return m00, m10
+end
+
+local function add_track(c, t, i)
+    if not t then
+        return
+    end
+
+    local type = t.image and "Image" or t["type"]:sub(1, 1):upper() .. t["type"]:sub(2)
+    append(c, "", {prefix=type .. ":", nl=o.nl .. o.nl, indent=""})
+    append(c, t["title"], {prefix_sep="", nl="", indent=""})
+    append(c, t["id"], {prefix="ID:"})
+    append(c, t["src-id"], {prefix="Demuxer ID:", nl="", indent=o.prefix_sep .. o.prefix_sep})
+    append(c, t["program-id"], {prefix="Program ID:", nl="", indent=o.prefix_sep .. o.prefix_sep})
+    append(c, t["ff-index"], {prefix="FFmpeg Index:", nl="", indent=o.prefix_sep .. o.prefix_sep})
+    append(c, t["external-filename"], {prefix="File:"})
+    append(c, "", {prefix="Flags:"})
+    local flags = {"default", "forced", "dependent", "visual-impaired",
+                   "hearing-impaired", "image", "albumart", "external"}
+    local any = false
+    for _, flag in ipairs(flags) do
+        if t[flag] then
+            append(c, flag, {prefix=any and ", " or "", nl="", indent="", prefix_sep=""})
+            any = true
+        end
+    end
+    if not any then
+        table.remove(c)
+    end
+    if append(c, t["codec-desc"], {prefix="Format:"}) then
+        append(c, t["codec-profile"], {prefix="[", nl="", indent=" ", prefix_sep="",
+               no_prefix_markup=true, suffix="]"})
+        if t["codec"] ~= t["decoder"] then
+            append(c, t["decoder"], {prefix="[", nl="", indent=" ", prefix_sep="",
+                   no_prefix_markup=true, suffix="]"})
+        end
+    end
+    append(c, t["lang"], {prefix="Language:"})
+    append(c, t["demux-channel-count"], {prefix="Channels:"})
+    append(c, t["demux-channels"], {prefix="Channel Layout:"})
+    append(c, t["demux-samplerate"], {prefix="Sample Rate:", suffix=" Hz"})
+    local function B(b) return b and string.format("%.2f", b / 1024) end
+    local bitrate = append(c, B(t["demux-bitrate"]), {prefix="Bitrate:", suffix=" kbps"})
+    append(c, B(t["hls-bitrate"]), {prefix="HLS Bitrate:", suffix=" kbps",
+                                    nl=bitrate and "" or o.nl,
+                                    indent=bitrate and o.prefix_sep .. o.prefix_sep})
+    append_resolution(c, {w=t["demux-w"], h=t["demux-h"], ["crop-x"]=t["demux-crop-x"],
+                          ["crop-y"]=t["demux-crop-y"], ["crop-w"]=t["demux-crop-w"],
+                          ["crop-h"]=t["demux-crop-h"]}, "Resolution:")
+    if not t["image"] and t["demux-fps"] then
+        append_fps(c, "track-list/" .. i .. "/demux-fps", "")
+    end
+    append(c, t["demux-rotation"], {prefix="Rotation:"})
+    if t["demux-par"] then
+        local num, den = float2rational(t["demux-par"])
+        append(c, string.format("%d:%d", num, den), {prefix="Pixel Aspect Ratio:"})
+    end
+    local track_rg = t["replaygain-track-peak"] ~= nil or t["replaygain-track-gain"] ~= nil
+    local album_rg = t["replaygain-album-peak"] ~= nil or t["replaygain-album-gain"] ~= nil
+    if track_rg or album_rg then
+        append(c, "", {prefix="Replay Gain:"})
+    end
+    if track_rg then
+        append(c, "", {prefix="Track:", indent=o.indent .. o.prefix_sep, prefix_sep=""})
+        append(c, t["replaygain-track-gain"], {prefix="Gain:", suffix=" dB",
+                                               nl="", indent=o.prefix_sep})
+        append(c, t["replaygain-track-peak"], {prefix="Peak:", suffix=" dB",
+                                               nl="", indent=o.prefix_sep})
+    end
+    if album_rg then
+        append(c, "", {prefix="Album:", indent=o.indent .. o.prefix_sep, prefix_sep=""})
+        append(c, t["replaygain-album-gain"], {prefix="Gain:", suffix=" dB",
+                                               nl="", indent=o.prefix_sep})
+        append(c, t["replaygain-album-peak"], {prefix="Peak:", suffix=" dB",
+                                               nl="", indent=o.prefix_sep})
+    end
+    if t["dolby-vision-profile"] or t["dolby-vision-level"] then
+        append(c, "", {prefix="Dolby Vision:"})
+        append(c, t["dolby-vision-profile"], {prefix="Profile:", nl="", indent=""})
+        append(c, t["dolby-vision-level"], {prefix="Level:", nl="",
+                                            indent=t["dolby-vision-profile"] and
+                                            o.prefix_sep .. o.prefix_sep or ""})
+    end
+end
+
+local function track_info()
+    local h, c = {}, {}
+    eval_ass_formatting()
+    add_header(h)
+    local desc = pages[o.key_page_5].desc
+    append(h, "", {prefix=format("%s:%s", desc, scroll_hint()), nl="", indent=""})
+    h = {table.concat(h)}
+    table.insert(c, o.nl .. o.nl)
+    add_file(c, false, true)
+    for i, track in ipairs(mp.get_property_native("track-list")) do
+        if track['selected'] then
+            add_track(c, track, i - 1)
+        end
+    end
+    return finalize_page(h, c, true)
 end
 
 local function perf_stats()
@@ -1258,7 +1415,7 @@ local function cache_stats()
     append(stats, info["debug-low-level-seeks"], {prefix = "Media Seeks:"})
     append(stats, info["debug-byte-level-seeks"], {prefix = "Stream Seeks:"})
 
-    append(stats, "", {prefix=o.nl .. o.nl .. "Ranges:", nl="", indent=""})
+    append(stats, "", {prefix="Ranges:", nl=o.nl .. o.nl, indent=""})
 
     append(stats, info["bof-cached"] and "yes" or "no",
            {prefix = "Start Cached:"})
@@ -1266,9 +1423,9 @@ local function cache_stats()
            {prefix = "End Cached:"})
 
     local ranges = info["seekable-ranges"] or {}
-    for n, r in ipairs(ranges) do
-        append(stats, mp.format_time(r["start"]) .. " - " ..
-                      mp.format_time(r["end"]),
+    for n, range in ipairs(ranges) do
+        append(stats, mp.format_time(range["start"]) .. " - " ..
+                      mp.format_time(range["end"]),
                {prefix = format("Range %s:", n)})
     end
 
@@ -1302,6 +1459,7 @@ pages = {
     [o.key_page_2] = { f = vo_stats, desc = "Extended Frame Timings", scroll = true },
     [o.key_page_3] = { f = cache_stats, desc = "Cache Statistics" },
     [o.key_page_4] = { f = keybinding_info, desc = "Active Key Bindings", scroll = true },
+    [o.key_page_5] = { f = track_info, desc = "Selected Tracks Info", scroll = true },
     [o.key_page_0] = { f = perf_stats, desc = "Internal Performance Info", scroll = true },
 }
 
@@ -1320,7 +1478,7 @@ local function record_data(skip)
         end
 
         if o.plot_vsync_jitter then
-            local r = mp.get_property_number("vsync-jitter", nil)
+            local r = mp.get_property_number("vsync-jitter")
             if r then
                 vsjitter_buf.pos = (vsjitter_buf.pos % vsjitter_buf.len) + 1
                 vsjitter_buf[vsjitter_buf.pos] = r
@@ -1329,7 +1487,7 @@ local function record_data(skip)
         end
 
         if o.plot_vsync_ratio then
-            local r = mp.get_property_number("vsync-ratio", nil)
+            local r = mp.get_property_number("vsync-ratio")
             if r then
                 vsratio_buf.pos = (vsratio_buf.pos % vsratio_buf.len) + 1
                 vsratio_buf[vsratio_buf.pos] = r
@@ -1352,13 +1510,17 @@ local function print_page(page, after_scroll)
     end
 end
 
-local function update_scale(name, value)
+local function update_scale(value)
+    local scale_with_video
+    if o.vidscale == "auto" then
+        scale_with_video = mp.get_property_native("osd-scale-by-window")
+    else
+        scale_with_video = o.vidscale == "yes"
+    end
+
     -- Calculate scaled metrics.
     local scale = 1
-    if not o.vidscale then
-        if value <= 1 then
-            value = 1
-        end
+    if not scale_with_video and value > 0 then
         scale = 720 / value
     end
     font_size = o.font_size * scale
@@ -1369,6 +1531,15 @@ local function update_scale(name, value)
     if display_timer:is_enabled() then
         print_page(curr_page)
     end
+end
+
+local function handle_osd_height_update(_, value)
+    update_scale(value)
+end
+
+local function handle_osd_scale_by_window_update()
+    local value = mp.get_property_native("osd-height")
+    update_scale(value)
 end
 
 local function clear_screen()
@@ -1390,8 +1561,10 @@ local function reset_scroll_offsets()
 end
 local function bind_scroll()
     if not scroll_bound then
-        mp.add_forced_key_binding(o.key_scroll_up, "__forced_"..o.key_scroll_up, scroll_up, {repeatable=true})
-        mp.add_forced_key_binding(o.key_scroll_down, "__forced_"..o.key_scroll_down, scroll_down, {repeatable=true})
+        mp.add_forced_key_binding(o.key_scroll_up, "__forced_" .. o.key_scroll_up,
+                                  scroll_up, {repeatable=true})
+        mp.add_forced_key_binding(o.key_scroll_down, "__forced_" .. o.key_scroll_down,
+                                  scroll_down, {repeatable=true})
         scroll_bound = true
     end
 end
@@ -1597,4 +1770,5 @@ if o.bindlist ~= "no" then
     end)
 end
 
-mp.observe_property('osd-height', 'native', update_scale)
+mp.observe_property('osd-height', 'native', handle_osd_height_update)
+mp.observe_property('osd-scale-by-window', 'native', handle_osd_scale_by_window_update)

@@ -28,7 +28,7 @@ struct ao {
     int samplerate;
     struct mp_chmap channels;
     int format;                 // one of AF_FORMAT_...
-    int bps;                    // bytes per second (per plane)
+    int64_t bps;                // bytes per second (per plane)
     int sstride;                // size of a sample on each plane
                                 // (format_size*num_channels/num_planes)
     int num_planes;
@@ -201,9 +201,7 @@ struct ao_driver {
 
 // These functions can be called by AOs.
 
-int ao_read_data(struct ao *ao, void **data, int samples, int64_t out_time_ns);
-MP_WARN_UNUSED_RESULT
-int ao_read_data_nonblocking(struct ao *ao, void **data, int samples, int64_t out_time_ns);
+int ao_read_data(struct ao *ao, void **data, int samples, int64_t out_time_ns, bool *eof, bool pad_silence, bool blocking);
 
 bool ao_chmap_sel_adjust(struct ao *ao, const struct mp_chmap_sel *s,
                          struct mp_chmap *map);
@@ -235,5 +233,7 @@ void ao_wakeup(struct ao *ao);
 
 int ao_read_data_converted(struct ao *ao, struct ao_convert_fmt *fmt,
                            void **data, int samples, int64_t out_time_ns);
+
+void ao_stop_streaming(struct ao *ao);
 
 #endif

@@ -67,7 +67,7 @@ static mf_t *open_mf_pattern(void *talloc_ctx, struct demuxer *d, char *filename
     if (filename[0] == '@') {
         struct stream *s = stream_create(filename + 1,
                             d->stream_origin | STREAM_READ, d->cancel, d->global);
-        if (s) {
+        if (s && !s->is_directory) {
             while (1) {
                 char buf[512];
                 int len = stream_read_peek(s, buf, sizeof(buf));
@@ -83,7 +83,7 @@ static mf_t *open_mf_pattern(void *talloc_ctx, struct demuxer *d, char *filename
                         break;
                     }
                     char *entry = bstrto0(mf, fname);
-                    if (!mp_path_exists(entry)) {
+                    if (!mp_path_exists(entry) && !mp_is_url(fname)) {
                         mp_verbose(log, "file not found: '%s'\n", entry);
                     } else {
                         MP_TARRAY_APPEND(mf, mf->names, mf->nr_of_files, entry);
@@ -95,6 +95,7 @@ static mf_t *open_mf_pattern(void *talloc_ctx, struct demuxer *d, char *filename
 
             goto exit_mf;
         }
+        free_stream(s);
         mp_info(log, "%s is not indirect filelist\n", filename + 1);
     }
 
@@ -107,7 +108,7 @@ static mf_t *open_mf_pattern(void *talloc_ctx, struct demuxer *d, char *filename
             bstr_split_tok(bfilename, ",", &bfname, &bfilename);
             char *fname2 = bstrdup0(mf, bfname);
 
-            if (!mp_path_exists(fname2))
+            if (!mp_path_exists(fname2) && !mp_is_url(bfname))
                 mp_verbose(log, "file not found: '%s'\n", fname2);
             else {
                 mf_add(mf, fname2);
@@ -118,10 +119,14 @@ static mf_t *open_mf_pattern(void *talloc_ctx, struct demuxer *d, char *filename
         goto exit_mf;
     }
 
-    size_t fname_avail = strlen(filename) + 32;
+    bstr bfilename = bstr0(filename);
+    if (mp_is_url(bfilename))
+        goto exit_mf;
+
+    size_t fname_avail = bfilename.len + 32;
     char *fname = talloc_size(mf, fname_avail);
 
-#if HAVE_GLOB
+#if HAVE_GLOB && !defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
     if (!strchr(filename, '%')) {
         // append * if none present
         snprintf(fname, fname_avail, "%s%c", filename,

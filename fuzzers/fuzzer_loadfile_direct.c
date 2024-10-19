@@ -27,26 +27,35 @@
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     if (size <= 1 || data[size - 1] != '\0')
-        return -1;
+        return 0;
 
     // Exlude data with null bytes inside
     if (strlen(data) != size - 1)
-        return -1;
+        return 0;
 
 #ifdef MPV_PROTO
-    if (!str_startswith(data, size - 1, MPV_STRINGIFY(MPV_PROTO) "://", strlen(MPV_STRINGIFY(MPV_PROTO) "://")))
-        return -1;
-#else
+    if (!str_startswith(data, size - 1, MPV_STRINGIFY(MPV_PROTO) "://", sizeof(MPV_STRINGIFY(MPV_PROTO) "://") - 1))
+        return 0;
+#endif
+
+#if !defined(MPV_PROTO) || defined(MPV_PROTO_FILE)
+    const uint8_t *data_check = data;
+    size_t size_check = size;
+    size_t prefix_size = sizeof("file://") - 1;
+    if (str_startswith(data, size - 1, "file://", prefix_size)) {
+        data_check += prefix_size;
+        size_check -= prefix_size;
+    }
     // Exclude some common paths that are not useful for testing.
     // Exclude -
-    if (size == 2 && !strncmp(data, "-", 1))
-        return -1;
+    if (size_check == 2 && !strncmp(data_check, "-", 1))
+        return 0;
     // Exclude relative paths
-    if (str_startswith(data, size - 1, ".", 1))
-        return -1;
+    if (str_startswith(data_check, size_check - 1, ".", 1))
+        return 0;
     // Exclude absolute paths
-    if (str_startswith(data, size - 1, "/", 1))
-        return -1;
+    if (str_startswith(data_check, size_check - 1, "/", 1))
+        return 0;
 #endif
 
     mpv_handle *ctx = mpv_create();
@@ -59,17 +68,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     check_error(mpv_set_option_string(ctx, "untimed", "yes"));
     check_error(mpv_set_option_string(ctx, "video-osd", "no"));
     check_error(mpv_set_option_string(ctx, "msg-level", "all=trace"));
+    check_error(mpv_set_option_string(ctx, "network-timeout", "1"));
 
     check_error(mpv_initialize(ctx));
 
     const char *cmd[] = {"loadfile", data, NULL};
     check_error(mpv_command(ctx, cmd));
 
-    while (1) {
-        mpv_event *event = mpv_wait_event(ctx, 10000);
-        if (event->event_id == MPV_EVENT_IDLE)
-            break;
-    }
+    player_loop(ctx);
 
     mpv_terminate_destroy(ctx);
 
