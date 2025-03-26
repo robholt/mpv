@@ -117,7 +117,7 @@ static bool fill_queue(struct priv *s)
     }
 
     int bytes_needed = s->bytes_queue - s->bytes_queued;
-    assert(bytes_needed >= 0);
+    mp_assert(bytes_needed >= 0);
 
     int bytes_copy = MPMIN(bytes_needed, bytes_in);
     if (bytes_copy > 0) {
@@ -652,10 +652,10 @@ const struct mp_user_filter_entry af_scaletempo = {
             .scale_nominal = 1.0,
         },
         .options = (const struct m_option[]) {
-            {"scale", OPT_FLOAT(scale_nominal), M_RANGE(0.01, DBL_MAX)},
-            {"stride", OPT_FLOAT(ms_stride), M_RANGE(0.01, DBL_MAX)},
+            {"scale", OPT_FLOAT(scale_nominal), M_RANGE(0.01, FLT_MAX)},
+            {"stride", OPT_FLOAT(ms_stride), M_RANGE(0.01, FLT_MAX)},
             {"overlap", OPT_FLOAT(factor_overlap), M_RANGE(0, 1)},
-            {"search", OPT_FLOAT(ms_search), M_RANGE(0, DBL_MAX)},
+            {"search", OPT_FLOAT(ms_search), M_RANGE(0, FLT_MAX)},
             {"speed", OPT_CHOICE(speed_opt,
                 {"pitch", SCALE_PITCH},
                 {"tempo", SCALE_TEMPO},

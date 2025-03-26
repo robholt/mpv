@@ -27,19 +27,34 @@
 const struct m_sub_options macos_conf = {
     .opts = (const struct m_option[]) {
         {"macos-title-bar-appearance", OPT_CHOICE(macos_title_bar_appearance,
-            {"auto", 0}, {"aqua", 1}, {"darkAqua", 2},
-            {"vibrantLight", 3}, {"vibrantDark", 4},
-            {"aquaHighContrast", 5}, {"darkAquaHighContrast", 6},
-            {"vibrantLightHighContrast", 7},
-            {"vibrantDarkHighContrast", 8})},
+            {"auto", MAC_APPEAR_AUTO},
+            {"aqua", MAC_APPEAR_AQUA},
+            {"darkAqua", MAC_APPEAR_DARK_AQUA},
+            {"vibrantLight", MAC_APPEAR_VIBRANT_LIGHT},
+            {"vibrantDark", MAC_APPEAR_VIBRANT_DARK},
+            {"aquaHighContrast", MAC_APPEAR_AQUA_HC},
+            {"darkAquaHighContrast", MAC_APPEAR_DARK_AQUA_HC},
+            {"vibrantLightHighContrast", MAC_APPEAR_VIBRANT_LIGHT_HC},
+            {"vibrantDarkHighContrast", MAC_APPEAR_VIBRANT_DARK_HC})},
         {"macos-title-bar-material", OPT_CHOICE(macos_title_bar_material,
-            {"titlebar", 0}, {"selection", 1}, {"menu", 2},
-            {"popover", 3}, {"sidebar", 4}, {"headerView", 5},
-            {"sheet", 6}, {"windowBackground", 7}, {"hudWindow", 8},
-            {"fullScreen", 9}, {"toolTip", 10}, {"contentBackground", 11},
-            {"underWindowBackground", 12}, {"underPageBackground", 13},
-            {"dark", 14}, {"light", 15}, {"mediumLight", 16},
-            {"ultraDark", 17})},
+            {"titlebar", MAC_MAT_TITLEBAR},
+            {"selection", MAC_MAT_SELECTION},
+            {"menu", MAC_MAT_MENU},
+            {"popover", MAC_MAT_POPOVER},
+            {"sidebar", MAC_MAT_SIDEBAR},
+            {"headerView", MAC_MAT_HEADER_VIEW},
+            {"sheet", MAC_MAT_SHEET},
+            {"windowBackground", MAC_MAT_WINDOW_BACKGROUND},
+            {"hudWindow", MAC_MAT_HUD_WINDOW},
+            {"fullScreen", MAC_MAT_FULL_SCREEN},
+            {"toolTip", MAC_MAT_TOOL_TIP},
+            {"contentBackground", MAC_MAT_CONTENT_BACKGROUND},
+            {"underWindowBackground", MAC_MAT_UNDER_WINDOW_BACKGROUND},
+            {"underPageBackground", MAC_MAT_UNDER_PAGE_BACKGROUND},
+            {"dark", MAC_MAT_DARK},
+            {"light", MAC_MAT_LIGHT},
+            {"mediumLight", MAC_MAT_MEDIUM_LIGHT},
+            {"ultraDark", MAC_MAT_ULTRA_DARK})},
         {"macos-title-bar-color", OPT_COLOR(macos_title_bar_color)},
         {"macos-fs-animation-duration",
             OPT_CHOICE(macos_fs_animation_duration, {"default", -1}),
@@ -53,6 +68,7 @@ const struct m_sub_options macos_conf = {
             {"callback", RENDER_TIMER_CALLBACK}, {"precise", RENDER_TIMER_PRECISE},
             {"system", RENDER_TIMER_SYSTEM}, {"feedback", RENDER_TIMER_PRESENTATION_FEEDBACK})},
         {"macos-menu-shortcuts", OPT_BOOL(macos_menu_shortcuts)},
+        {"macos-bundle-path", OPT_STRINGLIST(macos_bundle_path)},
         {"cocoa-cb-sw-renderer", OPT_CHOICE(cocoa_cb_sw_renderer,
             {"auto", -1}, {"no", 0}, {"yes", 1})},
         {"cocoa-cb-10bit-context", OPT_BOOL(cocoa_cb_10bit_context)},
@@ -80,6 +96,10 @@ const struct m_sub_options macos_conf = {
         .macos_fs_animation_duration = -1,
         .macos_render_timer = RENDER_TIMER_CALLBACK,
         .macos_menu_shortcuts = true,
+        .macos_bundle_path = (char *[]){
+            "/usr/local/bin", "/usr/local/sbin", "/opt/local/bin", "/opt/local/sbin",
+            "/opt/homebrew/bin", "/opt/homebrew/sbin", NULL
+        },
         .cocoa_cb_sw_renderer = -1,
         .cocoa_cb_10bit_context = true,
         .cocoa_cb_output_csp = MAC_CSP_AUTO,
@@ -110,6 +130,12 @@ const struct m_sub_options *app_bridge_vo_conf(void)
     return &vo_sub_opts;
 }
 
+const struct m_sub_options *app_bridge_root_conf(void)
+{
+    return &mp_opt_root;
+}
+
+#if HAVE_SWIFT
 void cocoa_init_media_keys(void)
 {
     [[AppHub shared] startRemote];
@@ -139,4 +165,4 @@ int cocoa_main(int argc, char *argv[])
 {
     return [(Application *)[Application sharedApplication] main:argc :argv];
 }
-
+#endif

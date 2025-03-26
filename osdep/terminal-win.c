@@ -33,15 +33,6 @@
 #include "osdep/threads.h"
 #include "osdep/w32_keyboard.h"
 
-// https://docs.microsoft.com/en-us/windows/console/setconsolemode
-// These values are effective on Windows 10 build 16257 (August 2017) or later
-#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
-    #define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
-#endif
-#ifndef DISABLE_NEWLINE_AUTO_RETURN
-    #define DISABLE_NEWLINE_AUTO_RETURN 0x0008
-#endif
-
 // Note: the DISABLE_NEWLINE_AUTO_RETURN docs say it enables delayed-wrap, but
 // it's wrong. It does only what its names suggests - and we want it unset:
 // https://github.com/microsoft/terminal/issues/4126#issuecomment-571418661
@@ -207,7 +198,7 @@ static void read_input(HANDLE in)
                 int w = 0, h = 0;
                 if (get_font_size(&w, &h)) {
                     mp_input_set_mouse_pos(input_ctx, w * (record->dwMousePosition.X + 0.5),
-                                                      h * (record->dwMousePosition.Y + 0.5));
+                                                      h * (record->dwMousePosition.Y + 0.5), false);
                 }
                 break;
             }

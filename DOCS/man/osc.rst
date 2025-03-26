@@ -20,35 +20,44 @@ The Interface
 
 ::
 
-    +---------+----------+------------------------------------------+----------+
-    | pl prev | pl next  |  title                                   |    cache |
-    +------+--+---+------+---------+-----------+------+-------+-----+-----+----+
+    +------+---------+---------+-----------------------------------------------+
+    | menu | pl prev | pl next | title                                   cache |
+    +------+------+------+---------+-----------+------+-------+-----+-----+----+
     | play | skip | skip | time    |  seekbar  | time | audio | sub | vol | fs |
     |      | back | frwd | elapsed |           | left |       |     |     |    |
     +------+------+------+---------+-----------+------+-------+-----+-----+----+
 
 
+menu
+    =============   ================================================
+    left-click      open the menu
+    =============   ================================================
+
 pl prev
     =============   ================================================
     left-click      play previous file in playlist
-    right-click     show playlist
-    shift+L-click   show playlist
+    shift+L-click   show the playlist
+    middle-click    show the playlist
+    right-click     open the playlist menu
     =============   ================================================
 
 pl next
     =============   ================================================
     left-click      play next file in playlist
-    right-click     show playlist
-    shift+L-click   show playlist
+    shift+L-click   show the playlist
+    middle-click    show the playlist
+    right-click     open the playlist menu
     =============   ================================================
 
 title
-    | Displays current media-title, filename, custom title, or target chapter
-      name while hovering the seekbar.
+    | Displays the current playlist position and media-title, filename or custom
+      title, or the target chapter name while hovering the seekbar.
 
     =============   ================================================
-    left-click      show playlist position and length and full title
-    right-click     show filename
+    left-click      show file and track info
+    shift+L-click   show the path
+    middle-click    show the path
+    right-click     open the history menu
     =============   ================================================
 
 cache
@@ -57,20 +66,25 @@ cache
 play
     =============   ================================================
     left-click      toggle play/pause
+    shift+L-click   toggle infinite looping of the playlist
+    middle-click    toggle infinite looping of the playlist
+    right-click     toggle infinite looping of the current file
     =============   ================================================
 
 skip back
     =============   ================================================
     left-click      go to beginning of chapter / previous chapter
-    right-click     show chapters
     shift+L-click   show chapters
+    middle-click    show chapters
+    right-click     open the chapter menu
     =============   ================================================
 
 skip frwd
     =============   ================================================
     left-click      go to next chapter
-    right-click     show chapters
     shift+L-click   show chapters
+    middle-click    show chapters
+    right-click     open the chapter menu
     =============   ================================================
 
 time elapsed
@@ -85,6 +99,7 @@ seekbar
 
     =============   ================================================
     left-click      seek to position
+    right-click     seek to the nearest chapter
     mouse wheel     seek forward/backward
     =============   ================================================
 
@@ -100,21 +115,29 @@ audio and sub
 
     =============   ================================================
     left-click      cycle audio/sub tracks forward
-    right-click     cycle audio/sub tracks backwards
-    shift+L-click   show available audio/sub tracks
+    shift+L-click   cycle audio/sub tracks backwards
+    middle-click    cycle audio/sub tracks backwards
+    right-click     open the audio/sub track menu
     mouse wheel     cycle audio/sub tracks forward/backwards
     =============   ================================================
 
 vol
     =============   ================================================
     left-click      toggle mute
+    right-click     open the audio device menu
     mouse wheel     volume up/down
     =============   ================================================
 
 fs
     =============   ================================================
     left-click      toggle fullscreen
+    right-click     toggle whether the window is maximized
     =============   ================================================
+
+Since mpv 0.40.0, it is possible to configure the commands to run with mouse
+actions on some interface elements, and the default behaviors of several
+elements were changed. If you miss some older behaviors, look at
+``etc/restore-osc-bindings.conf`` in the mpv git repository.
 
 Key Bindings
 ~~~~~~~~~~~~
@@ -152,7 +175,8 @@ Configurable Options
     Default: bottombar
 
     The layout for the OSC. Currently available are: box, slimbox,
-    bottombar and topbar. Default pre-0.21.0 was 'box'.
+    bottombar, topbar, slimbottombar and slimtopbar. Default pre-0.21.0 was
+    'box'.
 
 ``seekbarstyle``
     Default: bar
@@ -194,7 +218,7 @@ Configurable Options
     seekbar or separately if ``seekbarstyle`` is set to ``bar``.
 
 ``seekrangealpha``
-    Default: 200
+    Default: 20
 
     Alpha of the seekable ranges, 0 (opaque) to 255 (fully transparent).
 
@@ -258,17 +282,18 @@ Configurable Options
 ``valign``
     Default: 0.8
 
-    Vertical alignment, -1 (top) to 1 (bottom)
+    Vertical alignment in box and slimbox layouts, -1 (top) to 1 (bottom).
 
 ``halign``
     Default: 0.0
 
-    Horizontal alignment, -1 (left) to 1 (right)
+    Horizontal alignment in box and slimbox layouts, -1 (left) to 1 (right).
 
 ``barmargin``
     Default: 0
 
-    Margin from bottom (bottombar) or top (topbar), in pixels
+    Margin from bottom (bottombar, slimbottombar) or top (topbar, slimtopbar),
+    in pixels.
 
 ``boxalpha``
     Default: 80
@@ -284,10 +309,15 @@ Configurable Options
 ``fadeduration``
     Default: 200
 
-    Duration of fade out in ms, 0 = no fade
+    Duration of fade effects in ms, 0 = no fade.
+
+``fadein``
+    Default: no
+
+    Enable fade-in.
 
 ``title``
-    Default: ${media-title}
+    Default: ${!playlist-count==1:[${playlist-pos-1}/${playlist-count}] }${media-title}
 
     String that supports property expansion that will be displayed as
     OSC title.
@@ -328,6 +358,12 @@ Configurable Options
 
     Also supports ``never`` and ``always``
 
+``visibility_modes``
+    Default: never_auto_always
+
+    The list of visibility modes to cycle through when calling the
+    osc-visibility cycle script message. Modes are separated by ``_``.
+
 ``boxmaxchars``
     Default: 80
 
@@ -346,10 +382,10 @@ Configurable Options
     default values.) Additionally, ``visibility`` must be set to ``always``.
     Otherwise, this option does nothing.
 
-    Currently, this is supported for the ``bottombar`` and ``topbar`` layout
-    only. The other layouts do not change if this option is set. Separately,
-    if window controls are present (see below), they will be affected
-    regardless of which osc layout is in use.
+    Currently, this is supported for the ``bottombar``, ``slimbottombar``,
+    ``topbar`` and ``slimtopbar`` layouts only. The other layouts do not change
+    if this option is set. Separately, if window controls are present (see
+    below), they will be affected regardless of which osc layout is in use.
 
     The border is static and appears even if the OSC is configured to appear
     only on mouse interaction. If the OSC is invisible, the border is simply
@@ -401,12 +437,6 @@ Configurable Options
 
     Update chapter markers positions on duration changes, e.g. live streams.
     The updates are unoptimized - consider disabling it on very low-end systems.
-
-``chapters_osd``, ``playlist_osd``
-    Default: yes
-
-    Whether to display the chapters/playlist at the OSD when left-clicking the
-    next/previous OSC buttons, respectively.
 
 ``chapter_fmt``
     Default: ``Chapter: %s``
@@ -486,6 +516,107 @@ Configurable Options
 
     Use display fps to calculate the interval between OSC redraws.
 
+The following options configure what commands are run when the buttons are
+clicked. ``mbtn_mid`` commands are also triggered with ``shift+mbtn_left``.
+
+``menu_mbtn_left_command=script-binding select/menu; script-message-to osc osc-hide``
+
+``menu_mbtn_mid_command=``
+
+``menu_mbtn_right_command=``
+
+``playlist_prev_mbtn_left_command=playlist-prev; show-text ${playlist} 3000``
+
+``playlist_prev_mbtn_mid_command=show-text ${playlist} 3000``
+
+``playlist_prev_mbtn_right_command=script-binding select/select-playlist; script-message-to osc osc-hide``
+
+``playlist_next_mbtn_left_command=playlist-next; show-text ${playlist} 3000``
+
+``playlist_next_mbtn_mid_command=show-text ${playlist} 3000``
+
+``playlist_next_mbtn_right_command=script-binding select/select-playlist; script-message-to osc osc-hide``
+
+``title_mbtn_left_command=script-binding stats/display-page-5``
+
+``title_mbtn_mid_command=show-text ${path}``
+
+``title_mbtn_right_command=script-binding select/select-watch-history; script-message-to osc osc-hide``
+
+``play_pause_mbtn_left_command=cycle pause``
+
+``play_pause_mbtn_mid_command=cycle-values loop-playlist inf no``
+
+``play_pause_mbtn_right_command=cycle-values loop-file inf no``
+
+``chapter_prev_mbtn_left_command=osd-msg add chapter -1``
+
+``chapter_prev_mbtn_mid_command=show-text ${chapter-list} 3000``
+
+``chapter_prev_mbtn_right_command=script-binding select/select-chapter; script-message-to osc osc-hide``
+
+``chapter_next_mbtn_left_command=osd-msg add chapter 1``
+
+``chapter_next_mbtn_mid_command=show-text ${chapter-list} 3000``
+
+``chapter_next_mbtn_right_command=script-binding select/select-chapter; script-message-to osc osc-hide``
+
+``audio_track_mbtn_left_command=cycle audio``
+
+``audio_track_mbtn_mid_command=cycle audio down``
+
+``audio_track_mbtn_right_command=script-binding select/select-aid; script-message-to osc osc-hide``
+
+``audio_track_wheel_down_command=cycle audio``
+
+``audio_track_wheel_up_command=cycle audio down``
+
+``sub_track_mbtn_left_command=cycle sub``
+
+``sub_track_mbtn_mid_command=cycle sub down``
+
+``sub_track_mbtn_right_command=script-binding select/select-sid; script-message-to osc osc-hide``
+
+``sub_track_wheel_down_command=cycle sub``
+
+``sub_track_wheel_up_command=cycle sub down``
+
+``volume_mbtn_left_command=no-osd cycle mute``
+
+``volume_mbtn_mid_command=``
+
+``volume_mbtn_right_command=script-binding select/select-audio-device; script-message-to osc osc-hide``
+
+``volume_wheel_down_command=add volume -5``
+
+``volume_wheel_up_command=add volume 5``
+
+``fullscreen_mbtn_left_command="cycle fullscreen"``
+
+``fullscreen_mbtn_mid_command=``
+
+``fullscreen_mbtn_right_command="cycle window-maximized"``
+
+Custom Buttons
+~~~~~~~~~~~~~~
+
+Additional script-opts are available to define custom buttons in ``bottombar``
+and ``topbar`` layouts.
+
+.. admonition:: Example to add loop and shuffle buttons
+
+    custom_button_1_content=🔁
+    custom_button_1_mbtn_left_command=cycle-values loop-file inf no
+    custom_button_1_mbtn_right_command=cycle-values loop-playlist inf no
+
+    custom_button_2_content=🔀
+    custom_button_2_mbtn_left_command=playlist-shuffle
+
+    custom_button_3_content=⏱
+    custom_button_3_mbtn_left_command=add speed 1
+    custom_button_3_mbtn_right_command=set speed 1
+    custom_button_3_wheel_up_command=add speed 0.25
+    custom_button_3_wheel_down_command=add speed -0.25
 
 Script Commands
 ~~~~~~~~~~~~~~~
@@ -493,16 +624,16 @@ Script Commands
 The OSC script listens to certain script commands. These commands can bound
 in ``input.conf``, or sent by other scripts.
 
-``osc-message``
-    Show a message on screen using the OSC. First argument is the message,
-    second the duration in seconds.
-
 ``osc-visibility``
     Controls visibility mode ``never`` / ``auto`` (on mouse move) / ``always``
-    and also ``cycle`` to cycle between the modes.
+    and also ``cycle`` to cycle between the modes. If a second argument is
+    passed (any value), then the output on the OSD will be silenced.
 
 ``osc-show``
     Triggers the OSC to show up, just as if user moved mouse.
+
+``osc-hide``
+    Hide the OSC when ``visibility`` is ``auto``.
 
 Example
 
@@ -514,9 +645,5 @@ to set auto mode (the default) with ``b``::
 
 ``osc-idlescreen``
     Controls the visibility of the mpv logo on idle. Valid arguments are ``yes``,
-    ``no``, and ``cycle`` to toggle between yes and no.
-
-``osc-playlist``, ``osc-chapterlist``, ``osc-tracklist``
-    Shows a limited view of the respective type of list using the OSC. First
-    argument is duration in seconds.
-
+    ``no``, and ``cycle`` to toggle between yes and no. If a second argument is
+    passed (any value), then the output on the OSD will be silenced.

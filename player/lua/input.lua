@@ -18,15 +18,28 @@ License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
 local utils = require "mp.utils"
 local input = {}
 
+local function get_non_callbacks(t)
+    local non_callbacks = {}
+
+    for key, value in pairs(t) do
+        if type(value) ~= "function" then
+            non_callbacks[key] = value
+        end
+    end
+
+    return non_callbacks
+end
+
 local function register_event_handler(t)
     mp.register_script_message("input-event", function (type, args)
         if t[type] then
-            local suggestions, completion_start_position =
+            local completions, completion_pos, completion_append =
                 t[type](unpack(utils.parse_json(args or "") or {}))
 
-            if type == "complete" and suggestions then
+            if type == "complete" and completions then
                 mp.commandv("script-message-to", "console", "complete",
-                            utils.format_json(suggestions), completion_start_position)
+                            utils.format_json(completions), completion_pos,
+                            completion_append or "")
             end
         end
 
@@ -37,27 +50,15 @@ local function register_event_handler(t)
 end
 
 function input.get(t)
+    t.has_completions = t.complete ~= nil
+
     mp.commandv("script-message-to", "console", "get-input",
-                mp.get_script_name(), utils.format_json({
-                    prompt = t.prompt,
-                    default_text = t.default_text,
-                    cursor_position = t.cursor_position,
-                    id = t.id,
-                }))
+                mp.get_script_name(), utils.format_json(get_non_callbacks(t)))
 
     register_event_handler(t)
 end
 
-function input.select(t)
-    mp.commandv("script-message-to", "console", "get-input",
-                mp.get_script_name(), utils.format_json({
-                    prompt = t.prompt,
-                    items = t.items,
-                    default_item = t.default_item,
-                }))
-
-    register_event_handler(t)
-end
+input.select = input.get
 
 function input.terminate()
     mp.commandv("script-message-to", "console", "disable")

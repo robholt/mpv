@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-from PyQt6 import QtWidgets
-import pyqtgraph as pg
-import sys
 import re
+import sys
+from typing import Any
+
+import pyqtgraph as pg  # type: ignore
+from PyQt6 import QtWidgets  # type: ignore
 
 filename = sys.argv[1]
 
@@ -36,12 +38,18 @@ Currently, the following event types are supported:
 
 """
 
+class Event:
+    name: str
+    vals: list[tuple[float, float]] = []
+    type: str
+    marker = ""
+
 class G:
-    events = {}
+    events: dict[str, Event] = {}
     start = 0.0
     markers = ["o", "s", "t", "d"]
-    curveno = {}
-    sevents = []
+    curveno: dict[Any, int] = {}
+    sevents: list[Event] = []
 
 def find_marker():
     if len(G.markers) == 0:
@@ -49,12 +57,6 @@ def find_marker():
     m = G.markers[0]
     G.markers = G.markers[1:]
     return m
-
-class Event:
-    name = None
-    vals = []
-    type = None
-    marker = ""
 
 def get_event(event, evtype):
     if event not in G.events:
@@ -70,19 +72,28 @@ def get_event(event, evtype):
         G.events[event] = e
     return G.events[event]
 
-colors = [(0.0, 0.5, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.75, 0.75, 0), (0.0, 0.75, 0.75), (0.75, 0, 0.75)]
-def mkColor(t):
+colors = [
+    (0.0, 0.5, 0.0),
+    (0.0, 0.0, 1.0),
+    (0.0, 0.0, 0.0),
+    (1.0, 0.0, 0.0),
+    (0.75, 0.75, 0),
+    (0.0, 0.75, 0.75),
+    (0.75, 0, 0.75),
+]
+
+def mk_color(t):
     return pg.mkColor(int(t[0] * 255), int(t[1] * 255), int(t[2] * 255))
 
 SCALE = 1e6 # microseconds to seconds
 
-with open(filename, "r") as file:
+with open(filename) as file:
     for line in file:
         line = line.split("#")[0].strip()
         if not line:
             continue
-        ts, event = line.split(" ", 1)
-        ts = int(ts) / SCALE
+        ts_str, event = line.split(" ", 1)
+        ts = int(ts_str) / SCALE
         if G.start is None:
             G.start = ts
         ts -= G.start
@@ -98,18 +109,16 @@ with open(filename, "r") as file:
                 e.vals.append((ts, 0))
             case ["value", rest]:
                 val, name = rest.split(" ", 1)
-                val = float(val)
                 e = get_event(name, "value")
-                e.vals.append((ts, val))
+                e.vals.append((ts, float(val)))
             case ["event-timed", rest]:
                 val, name = rest.split(" ", 1)
-                val = int(val) / SCALE - G.start
                 e = get_event(name, "event-signal")
-                e.vals.append((val, 1))
+                e.vals.append((int(val) / SCALE - G.start, 1))
             case ["range-timed", rest]:
-                ts1, ts2, name = rest.split(" ", 2)
-                ts1 = int(ts1) / SCALE - G.start
-                ts2 = int(ts2) / SCALE - G.start
+                ts1_str, ts2_str, name = rest.split(" ", 2)
+                ts1 = int(ts1_str) / SCALE - G.start
+                ts2 = int(ts2_str) / SCALE - G.start
                 e = get_event(name, "event")
                 e.vals.append((ts1, 0))
                 e.vals.append((ts1, 1))
@@ -117,10 +126,8 @@ with open(filename, "r") as file:
                 e.vals.append((ts2, 0))
             case ["value-timed", rest]:
                 tsval, val, name = rest.split(" ", 2)
-                tsval = int(tsval) / SCALE - G.start
-                val = float(val)
                 e = get_event(name, "value")
-                e.vals.append((tsval, val))
+                e.vals.append((int(tsval) / SCALE - G.start, float(val)))
             case ["signal", name]:
                 e = get_event(name, "event-signal")
                 e.vals.append((ts, 1))
@@ -140,8 +147,8 @@ for e, index in zip(G.sevents, range(len(G.sevents))):
     else:
         e.vals = [(x, y * (m - index) / m) for (x, y) in e.vals]
 
-pg.setConfigOption('background', 'w')
-pg.setConfigOption('foreground', 'k')
+pg.setConfigOption("background", "w")
+pg.setConfigOption("foreground", "k")
 app = QtWidgets.QApplication([])
 win = pg.GraphicsLayoutWidget()
 win.show()
@@ -153,7 +160,7 @@ ax[0] = win.addPlot()
 if hasval:
     win.nextRow()
     ax[1] = win.addPlot()
-    ax[1].setXLink(ax[0])
+    ax[1].setXLink(ax[0])  # type: ignore
 
 for cur in ax:
     if cur is not None:
@@ -161,16 +168,16 @@ for cur in ax:
 
 for e in G.sevents:
     cur = ax[1 if e.type == "value" else 0]
-    if not cur in G.curveno:
+    if cur not in G.curveno:
         G.curveno[cur] = 0
-    args = {'name': e.name,'antialias':True}
-    color = mkColor(colors[G.curveno[cur] % len(colors)])
+    args = {"name": e.name,"antialias":True}
+    color = mk_color(colors[G.curveno[cur] % len(colors)])
     if e.type == "event-signal":
-        args['symbol'] = e.marker
-        args['symbolBrush'] = pg.mkBrush(color, width=0)
+        args["symbol"] = e.marker
+        args["symbolBrush"] = pg.mkBrush(color, width=0)
     else:
-        args['pen'] = pg.mkPen(color, width=0)
+        args["pen"] = pg.mkPen(color, width=0)
     G.curveno[cur] += 1
-    cur.plot(*zip(*e.vals), **args)
+    cur.plot(*zip(*e.vals), **args)  # type: ignore
 
 app.exec()

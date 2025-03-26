@@ -1,19 +1,17 @@
 # booleans
 option('gpl', type: 'boolean', value: true, description: 'GPL (version 2 or later) build')
 option('cplayer', type: 'boolean', value: true, description: 'mpv CLI player')
-option('libmpv', type: 'boolean', value: false, description: 'libmpv library')
+option('libmpv', type: 'boolean', value: true, description: 'libmpv library')
 option('build-date', type: 'boolean', value: true, description: 'include compile timestamp in binary')
 option('tests', type: 'boolean', value: false, description: 'meson unit tests')
 option('fuzzers', type: 'boolean', value: false, description: 'fuzzer binaries')
-# Reminder: normally always built, but enabled by MPV_LEAK_REPORT.
-# Building it can be disabled only by defining NDEBUG through CFLAGS.
-option('ta-leak-report', type: 'boolean', value: false, description: 'enable ta leak report by default (development only)')
+option('disable-packet-pool', type: 'boolean', value: false, description: 'disable packet pool (development only)')
 
 # misc features
-option('cdda', type: 'feature', value: 'disabled', description: 'cdda support (libcdio)')
+option('cdda', type: 'feature', value: 'auto', description: 'cdda support (libcdio)')
 option('cplugins', type: 'feature', value: 'auto', description: 'C plugins')
 option('dvbin', type: 'feature', value: 'auto', description: 'DVB input module')
-option('dvdnav', type: 'feature', value: 'disabled', description: 'dvdnav support')
+option('dvdnav', type: 'feature', value: 'auto', description: 'dvdnav support')
 option('iconv', type: 'feature', value: 'auto', description: 'iconv')
 option('javascript', type: 'feature', value: 'auto', description: 'Javascript (MuJS backend)')
 option('jpeg', type: 'feature', value: 'auto', description: 'libjpeg image writer')
@@ -118,6 +116,7 @@ option('swift-flags', type: 'string', description: 'Optional Swift compiler flag
 
 # Windows features
 option('win32-smtc', type: 'feature', value: 'auto', description: 'Enable Media Control support')
+option('win32-subsystem', type : 'string', value: 'windows', description : 'Windows subsystem to use for mpv.exe')
 
 # manpages
 option('html-build', type: 'feature', value: 'disabled', description: 'HTML manual generation')

@@ -20,6 +20,7 @@
 
 
 * [Wiki](https://github.com/mpv-player/mpv/wiki)
+* [User Scripts](https://github.com/mpv-player/mpv/wiki/User-Scripts)
 * [FAQ][FAQ]
 * [Manual](https://mpv.io/manual/master/)
 
@@ -76,6 +77,9 @@ on every release.
 Changes to the default key bindings are indicated in
 [restore-old-bindings.conf][restore-old-bindings].
 
+Changes to the default OSC bindings are indicated in
+[restore-osc-bindings.conf][restore-osc-bindings].
+
 ## Compilation
 
 
@@ -120,7 +124,7 @@ Essential dependencies (incomplete list):
 
 Libass dependencies (when building libass):
 
-- gcc or clang, yasm on x86 and x86_64
+- gcc or clang, nasm on x86 and x86_64
 - fribidi, freetype, fontconfig development headers (for libass)
 - harfbuzz (required for correct rendering of combining characters, particularly
   for correct rendering of non-English text on macOS, and Arabic/Indic scripts on
@@ -128,7 +132,7 @@ Libass dependencies (when building libass):
 
 FFmpeg dependencies (when building FFmpeg):
 
-- gcc or clang, yasm on x86 and x86_64
+- gcc or clang, nasm on x86 and x86_64
 - OpenSSL or GnuTLS (have to be explicitly enabled when compiling FFmpeg)
 - libx264/libmp3lame/libfdk-aac if you want to use encoding (have to be
   explicitly enabled when compiling FFmpeg)
@@ -214,4 +218,5 @@ Most activity happens on the IRC channel and the GitHub issue tracker.
 [interface-changes]: https://github.com/mpv-player/mpv/blob/master/DOCS/interface-changes.rst
 [api-changes]: https://github.com/mpv-player/mpv/blob/master/DOCS/client-api-changes.rst
 [restore-old-bindings]: https://github.com/mpv-player/mpv/blob/master/etc/restore-old-bindings.conf
+[restore-osc-bindings]: https://github.com/mpv-player/mpv/blob/master/etc/restore-osc-bindings.conf
 [contribute.md]: https://github.com/mpv-player/mpv/blob/master/DOCS/contribute.md

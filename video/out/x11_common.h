@@ -71,7 +71,6 @@ struct vo_x11_state {
 
     int xrandr_event;
     bool has_mesa;
-    bool has_nvidia;
 
     bool screensaver_enabled;
     bool dpms_touched;
@@ -116,15 +115,11 @@ struct vo_x11_state {
      * stays the same (even if that size is different from the current
      * window size after the user modified the latter). */
     int old_dw, old_dh;
-    int old_x, old_y;
     /* Video size changed during fullscreen when we couldn't tell the new
      * size to the window manager. Must set window size when turning
      * fullscreen off. */
     bool size_changed_during_fs;
     bool pos_changed_during_fs;
-
-    /* One of the autofit/geometry options changed at runtime. */
-    bool geometry_change;
 
     XComposeStatus compose_status;
 

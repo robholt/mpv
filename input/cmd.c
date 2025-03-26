@@ -27,7 +27,7 @@
 #include "input.h"
 #include "misc/json.h"
 
-#include "libmpv/client.h"
+#include "mpv/client.h"
 
 static void destroy_cmd(void *ptr)
 {
@@ -53,6 +53,7 @@ static const struct flag cmd_flags[] = {
     {"raw",                 MP_EXPAND_PROPERTIES, 0},
     {"repeatable",          MP_DISALLOW_REPEAT, MP_ALLOW_REPEAT},
     {"nonrepeatable",       MP_ALLOW_REPEAT,    MP_DISALLOW_REPEAT},
+    {"nonscalable",         0,               MP_DISALLOW_SCALE},
     {"async",               MP_SYNC_CMD,     MP_ASYNC_CMD},
     {"sync",                MP_ASYNC_CMD,    MP_SYNC_CMD},
     {0}
@@ -141,7 +142,7 @@ static bool finish_cmd(struct mp_log *log, struct mp_cmd *cmd)
         struct mp_cmd_arg arg = {.type = opt};
         if (opt->defval)
             m_option_copy(opt, &arg.v, opt->defval);
-        assert(i <= cmd->nargs);
+        mp_assert(i <= cmd->nargs);
         if (i == cmd->nargs) {
             MP_TARRAY_APPEND(cmd, cmd->args, cmd->nargs, arg);
         } else {
@@ -202,7 +203,7 @@ static bool set_node_arg(struct mp_log *log, struct mp_cmd *cmd, int i,
 
 static bool cmd_node_array(struct mp_log *log, struct mp_cmd *cmd, mpv_node *node)
 {
-    assert(node->format == MPV_FORMAT_NODE_ARRAY);
+    mp_assert(node->format == MPV_FORMAT_NODE_ARRAY);
     mpv_node_list *args = node->u.list;
     int cur = 0;
 
@@ -231,7 +232,7 @@ static bool cmd_node_array(struct mp_log *log, struct mp_cmd *cmd, mpv_node *nod
 
 static bool cmd_node_map(struct mp_log *log, struct mp_cmd *cmd, mpv_node *node)
 {
-    assert(node->format == MPV_FORMAT_NODE_MAP);
+    mp_assert(node->format == MPV_FORMAT_NODE_MAP);
     mpv_node_list *args = node->u.list;
 
     mpv_node *name = node_map_get(node, "name");
@@ -618,14 +619,14 @@ bool mp_input_is_repeatable_cmd(struct mp_cmd *cmd)
 
 bool mp_input_is_scalable_cmd(struct mp_cmd *cmd)
 {
-    return cmd->def->scalable;
+    return cmd->def->scalable && !(cmd->flags & MP_DISALLOW_SCALE);
 }
 
 void mp_print_cmd_list(struct mp_log *out)
 {
     for (int i = 0; mp_cmds[i].name; i++) {
         const struct mp_cmd_def *def = &mp_cmds[i];
-        mp_info(out, "%-20.20s", def->name);
+        mp_info(out, "%-25s", def->name);
         for (int j = 0; j < MP_CMD_DEF_MAX_ARGS && def->args[j].type; j++) {
             const struct m_option *arg = &def->args[j];
             bool is_opt = arg->defval || (arg->flags & MP_CMD_OPT_ARG);

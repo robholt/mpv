@@ -1,5 +1,7 @@
 #pragma once
 
+#include <libplacebo/colorspace.h>
+
 #include "video/out/vo.h"
 #include "video/csputils.h"
 
@@ -41,6 +43,10 @@ struct ra_ctx_fns {
     // display size etc. are determined by it.
     bool (*reconfig)(struct ra_ctx *ctx);
 
+    // Signal if the underlying context can use colorspace/hdr related functionality
+    // on its own.
+    bool (*pass_colorspace)(struct ra_ctx *ctx);
+
     // This behaves exactly like vo_driver.control().
     int (*control)(struct ra_ctx *ctx, int *events, int request, void *arg);
 
@@ -54,6 +60,29 @@ struct ra_ctx_fns {
     // Not normally called by the user of the ra_ctx.
     bool (*init)(struct ra_ctx *ctx);
     void (*uninit)(struct ra_ctx *ctx);
+};
+
+// These are a set of helpers for ra_ctx providers based on ra_gl.
+// The init function also initializes ctx->ra and ctx->swapchain, so the user
+// doesn't have to do this manually. (Similarly, the uninit function will
+// clean them up)
+
+struct ra_ctx_params {
+    // For special contexts (i.e. wayland) that want to check visibility
+    // before drawing a frame.
+    bool (*check_visible)(struct ra_ctx *ctx);
+
+    // See ra_swapchain_fns.color_depth.
+    int (*color_depth)(struct ra_ctx *ctx);
+
+    // See ra_swapchain_fns.get_vsync.
+    void (*get_vsync)(struct ra_ctx *ctx, struct vo_vsync_info *info);
+
+    // Set to the platform-specific function to swap buffers, like
+    // glXSwapBuffers, eglSwapBuffers etc. This will be called by
+    // ra_gl_ctx_swap_buffers. Required unless you either never call that
+    // function or if you override it yourself.
+    void (*swap_buffers)(struct ra_ctx *ctx);
 };
 
 // Extra struct for the swapchain-related functions so they can be easily
@@ -74,9 +103,14 @@ struct ra_fbo {
     struct pl_color_space color_space;
 };
 
+typedef struct pl_color_space pl_color_space_t;
+
 struct ra_swapchain_fns {
     // Gets the current framebuffer depth in bits (0 if unknown). Optional.
     int (*color_depth)(struct ra_swapchain *sw);
+
+    // Target device color space. Optional.
+    pl_color_space_t (*target_csp)(struct ra_swapchain *sw);
 
     // Called when rendering starts. Returns NULL on failure. This must be
     // followed by submit_frame, to submit the rendered frame. This function

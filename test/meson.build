@@ -46,11 +46,9 @@ if not features['win32-threads']
 endif
 
 if features['win32-desktop']
-    test_utils_deps += cc.find_library('imm32')
-    test_utils_deps += cc.find_library('ntdll')
-    if features['pathcch']
-        test_utils_deps += cc.find_library('pathcch')
-    endif
+    test_utils_deps += [cc.find_library('imm32'),
+                        cc.find_library('ntdll'),
+                        cc.find_library('pathcch')]
 endif
 test_utils_objects = libmpv.extract_objects(test_utils_files)
 test_utils = static_library('test-utils', 'test_utils.c', include_directories: incdir,
@@ -92,7 +90,7 @@ gl_video = executable('gl-video', 'gl_video.c', objects: gl_video_objects,
                       link_with: [img_utils, test_utils])
 test('gl-video', gl_video)
 
-json = executable('json', 'json.c', include_directories: incdir, link_with: test_utils)
+json = executable('json', 'json.c', include_directories: [incdir, incdir_public], link_with: test_utils)
 test('json', json)
 
 linked_list = executable('linked-list', files('linked_list.c'), include_directories: incdir)
@@ -107,20 +105,42 @@ test('format', format)
 language = executable('language', files('language.c'), include_directories: incdir, link_with: test_utils)
 test('language', language)
 
+codepoint_width = executable('codepoint-width', files('codepoint_width.c'),
+                             objects: libmpv.extract_objects('misc/codepoint_width.c'),
+                             include_directories: incdir, link_with: test_utils)
+test('codepoint-width', codepoint_width)
+
 paths_objects = libmpv.extract_objects('options/path.c', path_source)
 paths = executable('paths', 'paths.c', include_directories: incdir,
                    objects: paths_objects, link_with: test_utils)
 test('paths', paths)
 
 if get_option('libmpv')
-    exe = executable('libmpv-test', 'libmpv_test.c',
-                     include_directories: incdir, link_with: libmpv)
     file = join_paths(source_root, 'etc', 'mpv-icon-8bit-16x16.png')
-    test('libmpv', exe, args: file, timeout: 60, should_fail: not features['lua'])
 
-    exe = executable('libmpv-encode', 'libmpv_encode.c',
-                     include_directories: incdir, link_with: libmpv)
-    test('libmpv-encode', exe, timeout: 30)
+    exe = executable('libmpv-test-file-loading', 'libmpv_test_file_loading.c',
+                     dependencies: libmpv_dep)
+    test('libmpv-test-file-loading', exe, args: file, suite: 'libmpv')
+
+    exe = executable('libmpv-test-lavfi-complex', 'libmpv_test_lavfi_complex.c',
+                     dependencies: libmpv_dep)
+    test('libmpv-test-lavfi-complex', exe, args: file, suite: 'libmpv')
+
+    exe = executable('libmpv-test-options', 'libmpv_test_options.c',
+                     dependencies: libmpv_dep)
+    test('libmpv-test-options', exe, suite: 'libmpv')
+
+    # Old versions of ffmpeg are bugged when setting forced tracks and older
+    # versions of meson don't support the custom version checking argument.
+    if meson.version().version_compare('>= 1.5.0')
+        ffmpeg = find_program('ffmpeg', required: false, version: '>= 6.1', version_argument: '-version')
+        if ffmpeg.found()
+            subdir('samples')
+        endif
+    endif
+
+    exe = executable('libmpv-encode', 'libmpv_encode.c', dependencies: libmpv_dep)
+    test('libmpv-encode', exe, suite: 'libmpv')
 
     mpvlib = libmpv
     shared = get_option('default_library') == 'shared'
@@ -130,16 +150,16 @@ if get_option('libmpv')
     endif
     if shared
         exe = executable('libmpv-lifetime', sources: 'libmpv_lifetime.c',
-                         include_directories: incdir)
-        test('libmpv-lifetime', exe, depends: mpvlib)
+                         include_directories: incdir_public)
+        test('libmpv-lifetime', exe, depends: mpvlib, suite: 'libmpv')
     endif
 endif
 
 # Supported libavutil versions that work with these tests.
 # Will need to be manually updated when ffmpeg adds/removes more formats in the future.
-if libavutil.version().version_compare('>= 59.0.100')
+if libavutil.version().version_compare('>= 59.0.100') and libavutil.version().version_compare('<= 59.39.100')
     refdir = join_paths(source_root, 'test', 'ref', 'ffmpeg7')
-elif libavutil.version().version_compare('>= 58.27.100')
+elif libavutil.version().version_compare('>= 58.27.100') and libavutil.version().version_compare('< 59.0.100')
     refdir = join_paths(source_root, 'test', 'ref', 'ffmpeg6')
 endif
 

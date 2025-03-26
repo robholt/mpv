@@ -38,8 +38,8 @@ struct mp_cmd_def {
     bool allow_auto_repeat; // react to repeated key events
     bool on_updown;     // always emit it on both up and down key events
     bool vararg;        // last argument can be given 0 to multiple times
-    bool scalable;
-    bool is_ignore;
+    bool scalable;      // command called with scale for high resolution input
+    bool is_ignore;     // used by ignore command only, avoids queuing commands
     bool is_noisy;      // reduce log level
     bool default_async; // default to MP_ASYNC flag if none set by user
     // If you set this, handler() must ensure mp_cmd_ctx_complete() is called
@@ -76,6 +76,7 @@ enum mp_cmd_flags {
     MP_SYNC_CMD = 64,           // block on command completion
 
     MP_DISALLOW_REPEAT = 128,   // if used as keybinding, disallow key repeat
+    MP_DISALLOW_SCALE = 256,    // if used as keybinding, make it non-scalable
 
     MP_ON_OSD_FLAGS = MP_ON_OSD_NO | MP_ON_OSD_AUTO |
                       MP_ON_OSD_BAR | MP_ON_OSD_MSG,
@@ -113,6 +114,7 @@ typedef struct mp_cmd {
     bool repeated : 1;
     bool mouse_move : 1;
     bool canceled : 1;
+    bool coalesce : 1;
     int mouse_x, mouse_y;
     struct mp_cmd *queue_next;
     double scale;               // for scaling numeric arguments

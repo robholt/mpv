@@ -29,7 +29,7 @@ class MacCommon: Common {
         let log = LogHelper(mp_log_new(vo, vo.pointee.log, "mac"))
         let option = OptionHelper(vo, vo.pointee.global)
         super.init(option, log)
-        self.vo = vo
+        eventsLock.withLock { self.vo = vo }
         input = InputHelper(vo.pointee.input_ctx, option)
         presentation = Presentation(common: self)
         timer = PreciseTimer(common: self)
@@ -41,14 +41,13 @@ class MacCommon: Common {
     }
 
     @objc func config(_ vo: UnsafeMutablePointer<vo>) -> Bool {
-        self.vo = vo
+        eventsLock.withLock { self.vo = vo }
 
         DispatchQueue.main.sync {
             let previousActiveApp = getActiveApp()
             initApp()
 
-            let (_, wr) = getInitProperties(vo)
-
+            let (_, wr, forcePosition) = getInitProperties(vo)
             guard let layer = self.layer else {
                 log.error("Something went wrong, no MetalLayer was initialized")
                 exit(1)
@@ -60,7 +59,9 @@ class MacCommon: Common {
                 initWindowState()
             }
 
-            if (window?.unfsContentFramePixel.size ?? NSSize.zero) != wr.size && option.vo.auto_window_resize {
+            if forcePosition {
+                window?.updateFrame(wr)
+            } else if option.vo.auto_window_resize {
                 window?.updateSize(wr.size)
             }
 
@@ -99,14 +100,18 @@ class MacCommon: Common {
         }
     }
 
-     @objc func fillVsync(info: UnsafeMutablePointer<vo_vsync_info>) {
+    @objc func fillVsync(info: UnsafeMutablePointer<vo_vsync_info>) {
         if option.mac.macos_render_timer != RENDER_TIMER_PRESENTATION_FEEDBACK { return }
 
         let next = presentation?.next()
         info.pointee.vsync_duration = next?.duration ?? -1
         info.pointee.skipped_vsyncs = next?.skipped ?? -1
         info.pointee.last_queue_display_time = next?.time ?? -1
-     }
+    }
+
+    @objc func isVisible() -> Bool {
+        return window?.occlusionState.contains(.visible) ?? false
+    }
 
     override func displayLinkCallback(_ displayLink: CVDisplayLink,
                                       _ inNow: UnsafePointer<CVTimeStamp>,
@@ -145,10 +150,6 @@ class MacCommon: Common {
     override func updateDisplaylink() {
         super.updateDisplaylink()
         timer?.updatePolicy(periodSeconds: 1 / currentFps())
-    }
-
-    override func lightSensorUpdate() {
-        flagEvents(VO_EVENT_AMBIENT_LIGHTING_CHANGED)
     }
 
     override func updateICCProfile() {

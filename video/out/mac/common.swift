@@ -22,7 +22,6 @@ class Common: NSObject {
     var option: OptionHelper
     var input: InputHelper?
     var log: LogHelper
-    var vo: UnsafeMutablePointer<vo>?
     let queue: DispatchQueue = DispatchQueue(label: "io.mpv.queue")
 
     @objc var window: Window?
@@ -32,10 +31,11 @@ class Common: NSObject {
     var link: CVDisplayLink?
 
     let eventsLock = NSLock()
+    var vo: UnsafeMutablePointer<vo>?
     var events: Int = 0
 
     var lightSensor: io_connect_t = 0
-    var lastLmu: UInt64 = 0
+    var lastLmu: Double = 0
     var lightSensorIOPort: IONotificationPortRef?
 
     var displaySleepAssertion: IOPMAssertionID = IOPMAssertionID(0)
@@ -75,7 +75,7 @@ class Common: NSObject {
     }
 
     func initWindow(_ vo: UnsafeMutablePointer<vo>, _ previousActiveApp: NSRunningApplication?) {
-        let (targetScreen, wr) = getInitProperties(vo)
+        let (targetScreen, wr, _) = getInitProperties(vo)
 
         guard let view = self.view else {
             log.error("Something went wrong, no View was initialized")
@@ -120,7 +120,7 @@ class Common: NSObject {
     }
 
     func initView(_ vo: UnsafeMutablePointer<vo>, _ layer: CALayer) {
-        let (_, wr) = getInitProperties(vo)
+        let (_, wr, _) = getInitProperties(vo)
 
         view = View(frame: wr, common: self)
         guard let view = self.view else {
@@ -139,12 +139,11 @@ class Common: NSObject {
             DispatchQueue.main.async {
                 self.window?.toggleFullScreen(nil)
             }
-        } else {
-            window?.isMovableByWindowBackground = true
         }
     }
 
     func uninitCommon() {
+        eventsLock.withLock { self.vo = nil }
         setCursorVisibility(true)
         stopDisplaylink()
         uninitLightSensor()
@@ -240,8 +239,8 @@ class Common: NSObject {
             &displaySleepAssertion)
     }
 
-    func lmuToLux(_ v: UInt64) -> Int {
-        // the polinomial approximation for apple lmu value -> lux was empirically
+    func lmuToLux(_ lmu: Double) -> Double {
+        // the polynomial approximation for apple lmu value -> lux was empirically
         // derived by firefox developers (Apple provides no documentation).
         // https://bugzilla.mozilla.org/show_bug.cgi?id=793728
         let power_c4: Double = 1 / pow(10, 27)
@@ -249,13 +248,12 @@ class Common: NSObject {
         let power_c2: Double = 1 / pow(10, 12)
         let power_c1: Double = 1 / pow(10, 5)
 
-        let lum = Double(v)
-        let term4: Double = -3.0 * power_c4 * pow(lum, 4.0)
-        let term3: Double = 2.6 * power_c3 * pow(lum, 3.0)
-        let term2: Double = -3.4 * power_c2 * pow(lum, 2.0)
-        let term1: Double = 3.9 * power_c1 * lum
+        let term4: Double = -3.0 * power_c4 * pow(lmu, 4.0)
+        let term3: Double = 2.6 * power_c3 * pow(lmu, 3.0)
+        let term2: Double = -3.4 * power_c2 * pow(lmu, 2.0)
+        let term1: Double = 3.9 * power_c1 * lmu
 
-        let lux = Int(ceil(term4 + term3 + term2 + term1 - 0.19))
+        let lux = ceil(term4 + term3 + term2 + term1 - 0.19)
         return lux > 0 ? lux : 0
     }
 
@@ -267,7 +265,7 @@ class Common: NSObject {
 
         var kr = IOConnectCallMethod(com.lightSensor, 0, nil, 0, nil, 0, &values, &outputs, nil, nil)
         if kr == KERN_SUCCESS {
-            var mean = (values[0] + values[1]) / 2
+            var mean: Double = (Double(values[0]) + Double(values[1])) / 2
             if com.lastLmu != mean {
                 com.lastLmu = mean
                 com.lightSensorUpdate()
@@ -276,17 +274,20 @@ class Common: NSObject {
     }
 
     func lightSensorUpdate() {
-        log.warning("lightSensorUpdate not implemented")
+        flagEvents(VO_EVENT_AMBIENT_LIGHTING_CHANGED)
     }
 
     func initLightSensor() {
-        let srv = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("AppleLMUController"))
+        let mainPort: mach_port_t
+        if #available(macOS 12.0, *) { mainPort = kIOMainPortDefault } else { mainPort = kIOMasterPortDefault }
+
+        let srv = IOServiceGetMatchingService(mainPort, IOServiceMatching("AppleLMUController"))
         if srv == IO_OBJECT_NULL {
             log.verbose("Can't find an ambient light sensor")
             return
         }
 
-        lightSensorIOPort = IONotificationPortCreate(kIOMasterPortDefault)
+        lightSensorIOPort = IONotificationPortCreate(mainPort)
         IONotificationPortSetDispatchQueue(lightSensorIOPort, queue)
         var n = io_object_t()
         IOServiceAddInterestNotification(lightSensorIOPort, srv, kIOGeneralInterest, lightSensorCallback,
@@ -357,7 +358,7 @@ class Common: NSObject {
     }
 
     func setAppIcon() {
-        if ProcessInfo.processInfo.environment["MPVBUNDLE"] != "true" {
+        if !AppHub.shared.isBundle {
             NSApp.applicationIconImage = AppHub.shared.getIcon()
         }
     }
@@ -408,7 +409,7 @@ class Common: NSObject {
     }
 
     func getWindowGeometry(forScreen screen: NSScreen,
-                           videoOut vo: UnsafeMutablePointer<vo>) -> NSRect {
+                           videoOut vo: UnsafeMutablePointer<vo>) -> (NSRect, Bool) {
         let r = screen.convertRectToBacking(screen.frame)
         let targetFrame = option.mac.macos_geometry_calculation == FRAME_VISIBLE
             ? screen.visibleFrame : screen.frame
@@ -426,7 +427,7 @@ class Common: NSObject {
                                         y1: Int32(originY + rv.size.height))
 
         var geo: vo_win_geometry = vo_win_geometry()
-        vo_calc_window_geometry2(vo, &screenRC, Double(screen.backingScaleFactor), &geo)
+        vo_calc_window_geometry(vo, &screenRC, &screenRC, Double(screen.backingScaleFactor), false, &geo)
         vo_apply_window_geometry(vo, &geo)
 
         let height = CGFloat(geo.win.y1 - geo.win.y0)
@@ -434,18 +435,19 @@ class Common: NSObject {
         // flip the y origin again
         let y = CGFloat(-geo.win.y1)
         let x = CGFloat(geo.win.x0)
-        return screen.convertRectFromBacking(NSRect(x: x, y: y, width: width, height: height))
+        let wr = screen.convertRectFromBacking(NSRect(x: x, y: y, width: width, height: height))
+        return (wr, Bool(geo.flags & Int32(VO_WIN_FORCE_POS)))
     }
 
-    func getInitProperties(_ vo: UnsafeMutablePointer<vo>) -> (NSScreen, NSRect) {
+    func getInitProperties(_ vo: UnsafeMutablePointer<vo>) -> (NSScreen, NSRect, Bool) {
         guard let targetScreen = getTargetScreen(forFullscreen: false) ?? NSScreen.main else {
             log.error("Something went wrong, no Screen was found")
             exit(1)
         }
 
-        let wr = getWindowGeometry(forScreen: targetScreen, videoOut: vo)
+        let (wr, forcePosition) = getWindowGeometry(forScreen: targetScreen, videoOut: vo)
 
-        return (targetScreen, wr)
+        return (targetScreen, wr, forcePosition)
     }
 
     // call before initApp, because on macOS +10.15 it changes the active App
@@ -454,23 +456,19 @@ class Common: NSObject {
     }
 
     func flagEvents(_ ev: Int) {
-        eventsLock.lock()
-        events |= ev
-        eventsLock.unlock()
-
-        guard let vo = vo else {
-            log.warning("vo nil in flagEvents")
-            return
+        eventsLock.withLock {
+            events |= ev
+            guard let vo = vo else { return }
+            vo_wakeup(vo)
         }
-        vo_wakeup(vo)
     }
 
     func checkEvents() -> Int {
-        eventsLock.lock()
-        let ev = events
-        events = 0
-        eventsLock.unlock()
-        return ev
+        eventsLock.withLock {
+            let ev = events
+            events = 0
+            return ev
+        }
     }
 
     func windowDidEndAnimation() {}
@@ -535,8 +533,8 @@ class Common: NSObject {
                      TypeHelper.toPointer(&option.voPtr.pointee.autofit_smaller),
                      TypeHelper.toPointer(&option.voPtr.pointee.autofit_larger):
                     DispatchQueue.main.async {
-                        let (_, wr) = self.getInitProperties(vo)
-                        self.window?.updateFrame(wr)
+                        let (_, wr, forcePosition) = self.getInitProperties(vo)
+                        forcePosition ? self.window?.updateFrame(wr) : self.window?.updateSize(wr.size)
                     }
                 default:
                     break
@@ -590,8 +588,8 @@ class Common: NSObject {
             return VO_TRUE
         case VOCTRL_GET_AMBIENT_LUX:
             if lightSensor != 0 {
-                let lux = data!.assumingMemoryBound(to: Int32.self)
-                lux.pointee = Int32(lmuToLux(lastLmu))
+                let lux = data!.assumingMemoryBound(to: CDouble.self)
+                lux.pointee = lmuToLux(lastLmu)
                 return VO_TRUE
             }
             return VO_NOTIMPL
@@ -646,6 +644,9 @@ class Common: NSObject {
                 self.title = title
             }
             return VO_TRUE
+        case VOCTRL_BEGIN_DRAGGING:
+            self.window?.startDragging()
+            return VO_TRUE
         default:
             return VO_NOTIMPL
         }
@@ -663,9 +664,9 @@ class Common: NSObject {
         while option.nextChangedMacOption(property: &opt) {
             switch opt {
             case TypeHelper.toPointer(&option.macPtr.pointee.macos_title_bar_appearance):
-                titleBar?.set(appearance: Int(option.mac.macos_title_bar_appearance))
+                titleBar?.set(appearance: option.mac.macos_title_bar_appearance)
             case TypeHelper.toPointer(&option.macPtr.pointee.macos_title_bar_material):
-                titleBar?.set(material: Int(option.mac.macos_title_bar_material))
+                titleBar?.set(material: option.mac.macos_title_bar_material)
             case TypeHelper.toPointer(&option.macPtr.pointee.macos_title_bar_color):
                 titleBar?.set(color: option.mac.macos_title_bar_color)
             case TypeHelper.toPointer(&option.macPtr.pointee.cocoa_cb_output_csp):

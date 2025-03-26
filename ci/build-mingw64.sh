@@ -16,12 +16,14 @@ export AR=$TARGET-ar
 export NM=$TARGET-nm
 export RANLIB=$TARGET-ranlib
 
-export CFLAGS="-O2 -pipe -Wall -D_FORTIFY_SOURCE=2"
+export CFLAGS="-O2 -pipe -Wall"
 export LDFLAGS="-fstack-protector-strong"
 
 # anything that uses pkg-config
 export PKG_CONFIG_SYSROOT_DIR="$prefix_dir"
 export PKG_CONFIG_LIBDIR="$PKG_CONFIG_SYSROOT_DIR/lib/pkgconfig"
+
+. ./ci/build-common.sh
 
 if [[ "$TARGET" == "i686-"* ]]; then
     export WINEPATH="`$CC -print-file-name=`;/usr/$TARGET/lib"
@@ -111,7 +113,7 @@ function build_if_missing {
 ## mpv's dependencies
 
 _iconv () {
-    local ver=1.17
+    local ver=1.18
     gettar "https://ftp.gnu.org/pub/gnu/libiconv/libiconv-${ver}.tar.gz"
     builddir libiconv-${ver}
     ../configure --host=$TARGET $commonflags
@@ -146,7 +148,7 @@ _ffmpeg () {
     [ -d ffmpeg ] || $gitclone https://github.com/FFmpeg/FFmpeg.git ffmpeg
     builddir ffmpeg
     local args=(
-        --pkg-config=pkg-config --target-os=mingw32
+        --pkg-config=pkg-config --target-os=mingw32 --enable-gpl
         --enable-cross-compile --cross-prefix=$TARGET- --arch=${TARGET%%-*}
         --cc="$CC" --cxx="$CXX" $commonflags
         --disable-{doc,programs}
@@ -219,8 +221,8 @@ _libplacebo () {
 _libplacebo_mark=lib/libplacebo.dll.a
 
 _freetype () {
-    local ver=2.13.2
-    gettar "https://mirror.netcologne.de/savannah/freetype/freetype-${ver}.tar.xz"
+    local ver=2.13.3
+    gettar "https://download.savannah.gnu.org/releases/freetype/freetype-${ver}.tar.xz"
     builddir freetype-${ver}
     meson setup .. --cross-file "$prefix_dir/crossfile"
     makeplusinstall
@@ -229,7 +231,7 @@ _freetype () {
 _freetype_mark=lib/libfreetype.dll.a
 
 _fribidi () {
-    local ver=1.0.15
+    local ver=1.0.16
     gettar "https://github.com/fribidi/fribidi/releases/download/v${ver}/fribidi-${ver}.tar.xz"
     builddir fribidi-${ver}
     meson setup .. --cross-file "$prefix_dir/crossfile" \
@@ -240,7 +242,7 @@ _fribidi () {
 _fribidi_mark=lib/libfribidi.dll.a
 
 _harfbuzz () {
-    local ver=9.0.0
+    local ver=10.2.0
     gettar "https://github.com/harfbuzz/harfbuzz/releases/download/${ver}/harfbuzz-${ver}.tar.xz"
     builddir harfbuzz-${ver}
     meson setup .. --cross-file "$prefix_dir/crossfile" \
@@ -294,16 +296,13 @@ export CFLAGS LDFLAGS
 build=mingw_build
 rm -rf $build
 
-meson setup $build --cross-file "$prefix_dir/crossfile" \
-    --werror                   \
-    -Dc_args="-Wno-error=deprecated -Wno-error=deprecated-declarations" \
-    --buildtype debugoptimized \
-    --force-fallback-for=mujs  \
-    -Dmujs:werror=false        \
-    -Dmujs:default_library=static      \
-    -D{libmpv,tests}=true -Dlua=luajit \
-    -D{shaderc,spirv-cross,d3d11,javascript}=enabled
-
+meson setup $build --cross-file "$prefix_dir/crossfile" $common_args \
+  --buildtype debugoptimized \
+  --force-fallback-for=mujs \
+  -Dmujs:werror=false \
+  -Dmujs:default_library=static \
+  -Dlua=luajit \
+  -D{shaderc,spirv-cross,d3d11,javascript}=enabled
 meson compile -C $build
 
 if [ "$2" = pack ]; then
@@ -320,7 +319,7 @@ if [ "$2" = pack ]; then
     pushd artifact/tmp
     dlls=(
         libgcc_*.dll lib{ssp,stdc++,winpthread}-[0-9]*.dll # compiler runtime
-        av*.dll sw*.dll lib{ass,freetype,fribidi,harfbuzz,iconv,placebo}-[0-9]*.dll
+        av*.dll sw*.dll postproc-[0-9]*.dll lib{ass,freetype,fribidi,harfbuzz,iconv,placebo}-[0-9]*.dll
         lib{shaderc_shared,spirv-cross-c-shared,dav1d}.dll zlib1.dll
     )
     if [[ -f vulkan-1.dll ]]; then

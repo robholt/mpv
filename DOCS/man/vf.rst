@@ -23,6 +23,8 @@ The exact syntax is:
     See the ``vf`` command (and ``toggle`` sub-command) for further explanations
     and examples.
 
+    This is an object settings list option. See `List Options`_ for details.
+
     The general filter entry syntax is:
 
         ``["@"<label-name>":"] ["!"] <filter-name> [ "=" <filter-parameter-list> ]``
@@ -722,6 +724,8 @@ Available mpv-only filters are:
         which algorithm is actually selected. ``none`` always falls back. On
         most if not all hardware, this option will probably do nothing, because
         a video processor usually supports all modes or none.
+    ``nvidia-true-hdr``
+        Enable NVIDIA RTX Video HDR processing.
 
 ``fingerprint=...``
     Compute video frame fingerprints and provide them as metadata. Actually, it
@@ -838,4 +842,3 @@ Available mpv-only filters are:
         Do not use this with ``--vo=gpu``. It will apply filtering twice, since
         most ``--vo=gpu`` options are unconditionally applied to the ``gpu``
         filter. There is no mechanism in mpv to prevent this.
-

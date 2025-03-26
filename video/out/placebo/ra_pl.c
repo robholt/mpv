@@ -26,7 +26,7 @@ static pl_timer get_active_timer(const struct ra *ra);
 
 struct ra *ra_create_pl(pl_gpu gpu, struct mp_log *log)
 {
-    assert(gpu);
+    mp_assert(gpu);
 
     struct ra *ra = talloc_zero(NULL, struct ra);
     ra->log = log;
@@ -674,4 +674,3 @@ static struct ra_fns ra_fns_pl = {
     .timer_start            = timer_start_pl,
     .timer_stop             = timer_stop_pl,
 };
-

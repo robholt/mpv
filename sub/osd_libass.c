@@ -170,7 +170,7 @@ static ASS_Event *add_osd_ass_event(ASS_Track *track, const char *style,
     event->Duration = 100;
     event->Style = find_style(track, style, 0);
     event->ReadOrder = n;
-    assert(event->Text == NULL);
+    mp_assert(event->Text == NULL);
     if (text)
         event->Text = strdup(text);
     return event;
@@ -204,6 +204,10 @@ void osd_mangle_ass(bstr *dst, const char *in, bool replace_newlines)
         }
         if (*in == OSD_ASS_0[0] || *in == OSD_ASS_1[0]) {
             escape_ass = *in == OSD_ASS_1[0];
+            in += 1;
+            continue;
+        }
+        if (*in == TERM_MSG_0[0]) {
             in += 1;
             continue;
         }
@@ -252,7 +256,7 @@ static ASS_Style *prepare_osd_ass(struct osd_state *osd, struct osd_object *obj)
 
     double playresy = obj->ass.track->PlayResY;
     // Compensate for libass and mp_ass_set_style scaling the font etc.
-    if (!opts->osd_scale_by_window)
+    if (!opts->osd_scale_by_window && obj->vo_res.h)
         playresy *= 720.0 / obj->vo_res.h;
 
     ASS_Style *style = get_style(&obj->ass, "OSD");
@@ -359,6 +363,7 @@ static void get_osd_bar_box(struct osd_state *osd, struct osd_object *obj,
                             float *o_border)
 {
     struct mp_osd_render_opts *opts = osd->opts;
+    struct osd_bar_style_opts *bar_opts = opts->osd_bar_style;
 
     create_ass_track(osd, obj, &obj->ass);
     ASS_Track *track = obj->ass.track;
@@ -376,19 +381,20 @@ static void get_osd_bar_box(struct osd_state *osd, struct osd_object *obj,
     // and each bar ass event gets its own opaque box - breaking the bar.
     style->BorderStyle = 1; // outline
 
-    *o_w = track->PlayResX * (opts->osd_bar_w / 100.0);
-    *o_h = track->PlayResY * (opts->osd_bar_h / 100.0);
+    *o_w = track->PlayResX * (bar_opts->w / 100.0);
+    *o_h = track->PlayResY * (bar_opts->h / 100.0);
 
-    style->Outline = opts->osd_bar_outline_size;
+    style->Outline = bar_opts->outline_size;
     // Rendering with shadow is broken (because there's more than one shape)
     style->Shadow = 0;
+    style->Blur = 0;
 
     style->Alignment = 5;
 
     *o_border = style->Outline;
 
-    *o_x = get_align(opts->osd_bar_align_x, track->PlayResX, *o_w, *o_border);
-    *o_y = get_align(opts->osd_bar_align_y, track->PlayResY, *o_h, *o_border);
+    *o_x = get_align(bar_opts->align_x, track->PlayResX, *o_w, *o_border);
+    *o_y = get_align(bar_opts->align_y, track->PlayResY, *o_h, *o_border);
 }
 
 static void update_progbar(struct osd_state *osd, struct osd_object *obj)
@@ -464,19 +470,27 @@ static void update_progbar(struct osd_state *osd, struct osd_object *obj)
     // the "hole"
     ass_draw_rect_ccw(d, 0, 0, width, height);
 
+    struct osd_bar_style_opts *bar_opts = osd->opts->osd_bar_style;
     // chapter marks
-    for (int n = 0; n < obj->progbar_state.num_stops; n++) {
-        float s = obj->progbar_state.stops[n] * width;
-        float dent = MPMAX(border * 1.3, 1.6);
+    if (bar_opts->marker_style) {
+        for (int n = 0; n < obj->progbar_state.num_stops; n++) {
+            float s = obj->progbar_state.stops[n] * width;
+            float size = MPMAX(border * bar_opts->marker_scale,
+                               bar_opts->marker_min_size);
 
-        if (s > dent && s < width - dent) {
-            ass_draw_move_to(d, s + dent, 0);
-            ass_draw_line_to(d, s,        dent);
-            ass_draw_line_to(d, s - dent, 0);
+            if (bar_opts->marker_style == 2 &&
+                s > size / 2 && s < width - size / 2)
+            { // line
+                ass_draw_rect_cw(d, s - size / 2, 0, s + size / 2, height);
+            } else if (s > size && s < width - size) { //triangle
+                ass_draw_move_to(d, s + size, 0);
+                ass_draw_line_to(d, s,        size);
+                ass_draw_line_to(d, s - size, 0);
 
-            ass_draw_move_to(d, s - dent, height);
-            ass_draw_line_to(d, s,        height - dent);
-            ass_draw_line_to(d, s + dent, height);
+                ass_draw_move_to(d, s - size, height);
+                ass_draw_line_to(d, s,        height - size);
+                ass_draw_line_to(d, s + size, height);
+            }
         }
     }
 

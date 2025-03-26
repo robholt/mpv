@@ -116,7 +116,6 @@ bool osd_res_equals(struct mp_osd_res a, struct mp_osd_res b);
 enum mp_osd_font_codepoints {
     OSD_PLAY = 0x01,
     OSD_PAUSE = 0x02,
-    OSD_STOP = 0x03,
     OSD_REW = 0x04,
     OSD_FFW = 0x05,
     OSD_CLOCK = 0x06,
@@ -125,14 +124,8 @@ enum mp_osd_font_codepoints {
     OSD_VOLUME = 0x09,
     OSD_BRIGHTNESS = 0x0A,
     OSD_HUE = 0x0B,
-    OSD_BALANCE = 0x0C,
     OSD_REV = 0x0D,
     OSD_PANSCAN = 0x50,
-
-    OSD_PB_START = 0x10,
-    OSD_PB_0 = 0x11,
-    OSD_PB_END = 0x12,
-    OSD_PB_1 = 0x13,
 };
 
 
@@ -163,8 +156,20 @@ struct osd_style_opts {
     char *fonts_dir;
 };
 
+struct osd_bar_style_opts {
+    float align_x;
+    float align_y;
+    float w;
+    float h;
+    float outline_size;
+    float marker_scale;
+    float marker_min_size;
+    int marker_style;
+};
+
 extern const struct m_sub_options osd_style_conf;
 extern const struct m_sub_options sub_style_conf;
+extern const struct m_sub_options osd_bar_style_conf;
 
 struct osd_state;
 struct osd_object;

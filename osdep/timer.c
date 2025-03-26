@@ -22,7 +22,6 @@
 
 #include "common/common.h"
 #include "common/msg.h"
-#include "misc/random.h"
 #include "threads.h"
 #include "timer.h"
 
@@ -32,9 +31,8 @@ static mp_once timer_init_once = MP_STATIC_ONCE_INITIALIZER;
 static void do_timer_init(void)
 {
     mp_raw_time_init();
-    mp_rand_seed(mp_raw_time_ns());
     raw_time_offset = mp_raw_time_ns();
-    assert(raw_time_offset > 0);
+    mp_assert(raw_time_offset > 0);
 }
 
 void mp_time_init(void)
@@ -59,7 +57,7 @@ double mp_time_sec(void)
 
 int64_t mp_time_ns_add(int64_t time_ns, double timeout_sec)
 {
-    assert(time_ns > 0); // mp_time_ns() returns strictly positive values
+    mp_assert(time_ns > 0); // mp_time_ns() returns strictly positive values
     double t = MPCLAMP(timeout_sec * 1e9, -0x1p63, 0x1p63);
     int64_t ti = t == 0x1p63 ? INT64_MAX : (int64_t)t;
     if (ti > INT64_MAX - time_ns)

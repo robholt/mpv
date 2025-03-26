@@ -50,8 +50,12 @@
 #include "audio/out/ao_coreaudio_chmap.h"
 #include "audio/out/ao_coreaudio_properties.h"
 #include "audio/out/ao_coreaudio_utils.h"
+#include "osdep/mac/compat.h"
 
 struct priv {
+    // This must be put in the front
+    struct coreaudio_cb_sem sem;
+
     AudioDeviceID device;   // selected device
 
     bool paused;
@@ -120,7 +124,7 @@ static OSStatus enable_property_listener(struct ao *ao, bool enabled)
     for (int n = 0; n < MP_ARRAY_SIZE(devs); n++) {
         AudioObjectPropertyAddress addr = {
             .mScope    = kAudioObjectPropertyScopeGlobal,
-            .mElement  = kAudioObjectPropertyElementMaster,
+            .mElement  = kAudioObjectPropertyElementMain,
             .mSelector = selectors[n],
         };
         AudioDeviceID device = devs[n];
@@ -228,7 +232,7 @@ static int select_stream(struct ao *ao)
     talloc_free(streams);
 
     if (p->stream_idx < 0) {
-        MP_ERR(ao, "No useable substream found.\n");
+        MP_ERR(ao, "No usable substream found.\n");
         goto coreaudio_error;
     }
 
@@ -459,6 +463,10 @@ const struct ao_driver audio_out_coreaudio_exclusive = {
     .list_devs = ca_get_device_list,
     .priv_size = sizeof(struct priv),
     .priv_defaults = &(const struct priv){
+        .sem = (struct coreaudio_cb_sem){
+            .mutex = MP_STATIC_MUTEX_INITIALIZER,
+            .cond = MP_STATIC_COND_INITIALIZER,
+        },
         .hog_pid = -1,
         .stream = 0,
         .stream_idx = -1,

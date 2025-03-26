@@ -47,7 +47,7 @@
 #include "core.h"
 #include "command.h"
 #include "client.h"
-#include "libmpv/client.h"
+#include "mpv/client.h"
 
 // List of builtin modules and their contents as strings.
 // All these are generated from player/lua/*.lua
@@ -85,6 +85,12 @@ static const char * const builtin_lua_scripts[][2] = {
     {"@select.lua",
 #   include "player/lua/select.lua.inc"
     },
+    {"@positioning.lua",
+#   include "player/lua/positioning.lua.inc"
+    },
+    {"@commands.lua",
+#   include "player/lua/commands.lua.inc"
+    },
     {0}
 };
 
@@ -105,7 +111,6 @@ struct script_ctx {
 
 #if LUA_VERSION_NUM <= 501
 #define mp_cpcall lua_cpcall
-#define mp_lua_len lua_objlen
 #else
 // Curse whoever had this stupid idea. Curse whoever thought it would be a good
 // idea not to include an emulated lua_cpcall() even more.
@@ -115,7 +120,6 @@ static int mp_cpcall (lua_State *L, lua_CFunction func, void *ud)
     lua_pushlightuserdata(L, ud);
     return lua_pcall(L, 1, 0, 0);
 }
-#define mp_lua_len lua_rawlen
 #endif
 
 // Ensure that the given argument exists, even if it's nil. Can be used to
@@ -211,7 +215,7 @@ static struct script_ctx *get_ctx(lua_State *L)
     lua_getfield(L, LUA_REGISTRYINDEX, "ctx");
     struct script_ctx *ctx = lua_touserdata(L, -1);
     lua_pop(L, 1);
-    assert(ctx);
+    mp_assert(ctx);
     return ctx;
 }
 
@@ -410,24 +414,24 @@ static int run_lua(lua_State *L)
 
     lua_pop(L, 1); // -
 
-    assert(lua_gettop(L) == 0);
+    mp_assert(lua_gettop(L) == 0);
 
     // Add a preloader for each builtin Lua module
     lua_getglobal(L, "package"); // package
-    assert(lua_type(L, -1) == LUA_TTABLE);
+    mp_assert(lua_type(L, -1) == LUA_TTABLE);
     lua_getfield(L, -1, "preload"); // package preload
-    assert(lua_type(L, -1) == LUA_TTABLE);
+    mp_assert(lua_type(L, -1) == LUA_TTABLE);
     for (int n = 0; builtin_lua_scripts[n][0]; n++) {
         lua_pushcfunction(L, load_builtin); // package preload load_builtin
         lua_setfield(L, -2, builtin_lua_scripts[n][0]);
     }
     lua_pop(L, 2); // -
 
-    assert(lua_gettop(L) == 0);
+    mp_assert(lua_gettop(L) == 0);
 
     fuck_lua(L, "path", ctx->path);
     fuck_lua(L, "cpath", NULL);
-    assert(lua_gettop(L) == 0);
+    mp_assert(lua_gettop(L) == 0);
 
     // run this under an error handler that can do backtraces
     lua_pushcfunction(L, error_handler); // errf
@@ -1273,7 +1277,7 @@ static int script_autofree_call(lua_State *L)
     // n*args &data
     autofree_data *data = lua_touserdata(L, -1);
     lua_pop(L, 1);  // n*args
-    assert(data && data->target && data->ctx);
+    mp_assert(data && data->target && data->ctx);
     return data->target(L, data->ctx);
 }
 
@@ -1284,7 +1288,7 @@ static int script_autofree_trampoline(lua_State *L)
         .target = lua_touserdata(L, lua_upvalueindex(2)),  // fn
         .ctx = NULL,
     };
-    assert(data.target);
+    mp_assert(data.target);
 
     lua_pushvalue(L, lua_upvalueindex(1));  // n*args autofree_call (closure)
     lua_insert(L, 1);  // autofree_call n*args

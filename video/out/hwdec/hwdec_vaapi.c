@@ -21,6 +21,7 @@
 
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_vaapi.h>
+#include <libavutil/pixdesc.h>
 #include <va/va_drmcommon.h>
 
 #include "config.h"
@@ -32,7 +33,7 @@
 #include "video/vaapi.h"
 
 #if HAVE_VAAPI_DRM
-#include "libmpv/render_gl.h"
+#include "mpv/render_gl.h"
 #endif
 
 #if HAVE_VAAPI_X11
@@ -106,8 +107,6 @@ struct priv_owner {
     struct mp_vaapi_ctx *ctx;
     VADisplay *display;
     int *formats;
-    int *hwupload_formats;
-    int num_hwupload_formats;
     bool probing_formats; // temporary during init
 
     struct dmabuf_interop dmabuf_interop;
@@ -138,10 +137,36 @@ static const dmabuf_interop_init interop_inits[] = {
     NULL
 };
 
+static struct mp_conversion_filter *get_conversion_filter_desc(int target_imgfmt)
+{
+    const AVPixFmtDescriptor *pixfmt_desc = av_pix_fmt_desc_get(imgfmt2pixfmt(target_imgfmt));
+    if (!pixfmt_desc)
+        return NULL;
+
+    bool rgb = pixfmt_desc->flags & AV_PIX_FMT_FLAG_RGB;
+
+    struct mp_conversion_filter *desc = talloc_ptrtype(NULL, desc);
+    desc->name = "scale_vaapi";
+    desc->args = talloc_array_ptrtype(desc, desc->args, rgb ? 5 : 3);
+
+    int i = 0;
+    desc->args[i++] = "format";
+    desc->args[i++] = (char *)pixfmt_desc->name;
+    if (rgb) {
+        desc->args[i++] = "out_range";
+        desc->args[i++] = "full";
+    }
+    desc->args[i++] = NULL;
+
+    return desc;
+}
+
+static bool try_format_upload(void *priv, enum mp_imgfmt src_fmt, enum mp_imgfmt dst_fmt);
+
 static int init(struct ra_hwdec *hw)
 {
     struct priv_owner *p = hw->priv;
-    VAStatus vas;
+    VAStatus status;
 
     for (int i = 0; interop_inits[i]; i++) {
         if (interop_inits[i](hw, &p->dmabuf_interop)) {
@@ -181,9 +206,9 @@ static int init(struct ra_hwdec *hw)
 
     VAConfigID config_id;
     AVVAAPIHWConfig *hwconfig = NULL;
-    vas = vaCreateConfig(p->display, VAProfileNone, VAEntrypointVideoProc, NULL,
+    status = vaCreateConfig(p->display, VAProfileNone, VAEntrypointVideoProc, NULL,
                          0, &config_id);
-    if (vas == VA_STATUS_SUCCESS) {
+    if (status == VA_STATUS_SUCCESS) {
         hwconfig = av_hwdevice_hwconfig_alloc(p->ctx->av_device_ref);
         hwconfig->config_id = config_id;
     }
@@ -193,9 +218,10 @@ static int init(struct ra_hwdec *hw)
 
     p->ctx->hwctx.hw_imgfmt = IMGFMT_VAAPI;
     p->ctx->hwctx.supported_formats = p->formats;
-    p->ctx->hwctx.supported_hwupload_formats = p->hwupload_formats;
+    p->ctx->hwctx.try_upload = try_format_upload;
+    p->ctx->hwctx.try_upload_priv = p;
     p->ctx->hwctx.driver_name = hw->driver->name;
-    p->ctx->hwctx.conversion_filter_name = "scale_vaapi";
+    p->ctx->hwctx.get_conversion_filter = get_conversion_filter_desc;
     p->ctx->hwctx.conversion_config = hwconfig;
     hwdec_devices_add(hw->devs, &p->ctx->hwctx);
     return 0;
@@ -414,45 +440,51 @@ err:
     av_buffer_unref(&fref);
 }
 
-static void try_format_upload(struct ra_hwdec *hw, enum AVPixelFormat pixfmt)
+static bool try_format_upload(void *priv, enum mp_imgfmt src_fmt, enum mp_imgfmt dst_fmt)
 {
-    int mp_fmt = pixfmt2imgfmt(pixfmt);
-    if (!mp_fmt || IMGFMT_IS_HWACCEL(mp_fmt))
-        return;
+    if (IMGFMT_IS_HWACCEL(src_fmt))
+        return true;
 
-    // Arbitrarily use the first format we have for the hw_subfmt.
-    struct priv_owner *p = hw->priv;
-    if (!p->formats || !p->formats[0])
-        return;
-
-    struct mp_image *src = mp_image_alloc(mp_fmt, 2, 2);
-    if (!src)
-        return;
-
-    AVBufferRef *hw_pool = av_hwframe_ctx_alloc(p->ctx->av_device_ref);
-    mp_update_av_hw_frames_pool(&hw_pool, p->ctx->av_device_ref, IMGFMT_VAAPI,
-                                p->formats[0], src->w, src->h, false);
-
-    struct mp_image *dst = mp_av_pool_image_hw_upload(hw_pool, src);
-
-    VADisplay *display = p->display;
+    bool ret = false;
+    struct mp_image *src = NULL;
+    struct mp_image *dst = NULL;
+    AVBufferRef *hw_pool = NULL;
     VADRMPRIMESurfaceDescriptor desc = {0};
-    VASurfaceID id = va_surface_id(dst);
+
+    if (!(src = mp_image_alloc(src_fmt, 16, 16)))
+        goto end;
+
+    struct priv_owner *p = priv;
+    if (!(hw_pool = av_hwframe_ctx_alloc(p->ctx->av_device_ref)))
+        goto end;
+
+    if (!mp_update_av_hw_frames_pool(&hw_pool, p->ctx->av_device_ref, IMGFMT_VAAPI,
+                                     dst_fmt, src->w, src->h, false))
+    {
+        goto end;
+    }
+
+    if (!(dst = mp_av_pool_image_hw_upload(hw_pool, src)))
+        goto end;
 
     uint32_t flags = p->dmabuf_interop.composed_layers ?
         VA_EXPORT_SURFACE_COMPOSED_LAYERS : VA_EXPORT_SURFACE_SEPARATE_LAYERS;
-    VAStatus status = vaExportSurfaceHandle(display, id, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+    VAStatus status = vaExportSurfaceHandle(p->display, va_surface_id(dst),
+                                            VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
                                             flags | VA_EXPORT_SURFACE_READ_ONLY, &desc);
 
-    if (status == VA_STATUS_SUCCESS)
-        MP_TARRAY_APPEND(p, p->hwupload_formats, p->num_hwupload_formats, mp_fmt);
+    if (status != VA_STATUS_SUCCESS)
+        goto end;
 
+    ret = true;
+
+end:
     close_file_descriptors(&desc);
     av_buffer_unref(&hw_pool);
     mp_image_unrefp(&dst);
     mp_image_unrefp(&src);
 
-    return;
+    return ret;
 }
 
 static void try_format_config(struct ra_hwdec *hw, AVVAAPIHWConfig *hwconfig)
@@ -498,11 +530,6 @@ static void try_format_config(struct ra_hwdec *hw, AVVAAPIHWConfig *hwconfig)
     for (int n = 0; fmts &&
                     fmts[n] != AV_PIX_FMT_NONE; n++)
         try_format_pixfmt(hw, fmts[n]);
-
-    for (int n = 0; fmts &&
-                    fmts[n] != AV_PIX_FMT_NONE; n++)
-        try_format_upload(hw, fmts[n]);
-    MP_TARRAY_APPEND(p, p->hwupload_formats, p->num_hwupload_formats, 0); // sanity check
 
 err:
     av_hwframe_constraints_free(&fc);

@@ -25,18 +25,17 @@
 
 #include "mpv_talloc.h"
 
-#include "misc/bstr.h"
 #include "common/common.h"
 #include "common/global.h"
-#include "misc/bstr.h"
+#include "misc/codepoint_width.h"
 #include "options/options.h"
 #include "options/path.h"
-#include "osdep/terminal.h"
 #include "osdep/io.h"
+#include "osdep/terminal.h"
 #include "osdep/threads.h"
 #include "osdep/timer.h"
 
-#include "libmpv/client.h"
+#include "mpv/client.h"
 
 #include "msg.h"
 #include "msg_control.h"
@@ -245,7 +244,7 @@ static void prepare_prefix(struct mp_log_root *root, bstr *out, int lev, int ter
         bstr up_clear = bstr0("\033[A\033[K");
         for (int i = 1; i < root->status_lines; ++i)
             bstr_xappend(root, out, up_clear);
-        assert(root->status_lines > 0 && root->blank_lines >= root->status_lines);
+        mp_assert(root->status_lines > 0 && root->blank_lines >= root->status_lines);
         line_skip = root->blank_lines - root->status_lines;
     }
 
@@ -374,39 +373,8 @@ static bool test_terminal_level(struct mp_log *log, int lev)
            !(lev == MSGL_STATUS && terminal_in_background());
 }
 
-// This is very basic way to infer needed width for a string.
-static int term_disp_width(bstr str)
-{
-    int width = 0;
-
-    while (str.len) {
-        if (bstr_eatstart0(&str, "\033[")) {
-            while (str.len && !((*str.start >= '@' && *str.start <= '~') || *str.start == 'm'))
-                str = bstr_cut(str, 1);
-            str = bstr_cut(str, 1);
-            continue;
-        }
-
-        bstr code = bstr_split_utf8(str, &str);
-        if (code.len == 0)
-            return 0;
-
-        if (code.len == 1 && *code.start == '\n')
-            continue;
-
-        // Only single-width characters are supported
-        width++;
-
-        // Assume that everything before \r should be discarded for simplicity
-        if (code.len == 1 && *code.start == '\r')
-            width = 0;
-    }
-
-    return width;
-}
-
 static void append_terminal_line(struct mp_log *log, int lev,
-                                 bstr text, bstr *term_msg, int *line_w)
+                                 bstr text, bstr *term_msg, int *line_w, int term_w)
 {
     struct mp_log_root *root = log->root;
 
@@ -426,13 +394,45 @@ static void append_terminal_line(struct mp_log *log, int lev,
     }
 
     bstr_xappend(root, term_msg, text);
-    *line_w = root->isatty[term_msg_fileno(root, lev)]
-                ? term_disp_width(bstr_splice(*term_msg, start, term_msg->len)) : 0;
+
+    const unsigned char *cut_pos = NULL;
+    int ellipsis_width = 2;
+    int width = term_disp_width(bstr_splice(*term_msg, start, term_msg->len),
+                                term_w - ellipsis_width, &cut_pos);
+    if (cut_pos) {
+        int new_len = cut_pos - term_msg->start;
+        bstr rem = bstrdup(NULL, (bstr){(unsigned char *)cut_pos, term_msg->len - new_len});
+        void *ptr = rem.start;
+        term_msg->len = new_len;
+
+        bstr_xappend(root, term_msg, bstr0(".."));
+
+        while (rem.len) {
+            if (bstr_eatstart0(&rem, "\n")) {
+                bstr_xappend(root, term_msg, bstr0("\n"));
+                continue;
+            }
+            if (bstr_eatstart0(&rem, "\033[")) {
+                bstr_xappend(root, term_msg, bstr0("\033["));
+
+                while (rem.len && !((*rem.start >= '@' && *rem.start <= '~') || *rem.start == 'm')) {
+                    bstr_xappend(root, term_msg, bstr_splice(rem, 0, 1));
+                    rem = bstr_cut(rem, 1);
+                }
+                bstr_xappend(root, term_msg, bstr_splice(rem, 0, 1));
+            }
+            rem = bstr_cut(rem, 1);
+        }
+        talloc_free(ptr);
+
+        width += ellipsis_width;
+    }
+    *line_w = root->isatty[term_msg_fileno(root, lev)] ? width : 0;
 }
 
 static struct mp_log_buffer_entry *log_buffer_read(struct mp_log_buffer *buffer)
 {
-    assert(buffer->num_entries);
+    mp_assert(buffer->num_entries);
     struct mp_log_buffer_entry *res = buffer->entries[buffer->entry0];
     buffer->entry0 = (buffer->entry0 + 1) % buffer->capacity;
     buffer->num_entries -= 1;
@@ -521,14 +521,16 @@ static void write_term_msg(struct mp_log *log, int lev, bstr text, bstr *out)
     while (str.len) {
         bstr line = bstr_getline(str, &str);
         if (line.start[line.len - 1] != '\n') {
-            assert(str.len == 0);
+            mp_assert(str.len == 0);
             str = line;
             break;
         }
 
+        bool clip = bstr_eatstart0(&line, TERM_MSG_0);
         if (print_term) {
             int line_w;
-            append_terminal_line(log, lev, line, &root->term_msg_tmp, &line_w);
+            append_terminal_line(log, lev, line, &root->term_msg_tmp, &line_w,
+                                 clip && term_w ? term_w : INT_MAX);
             term_msg_lines += (!line_w || !term_w)
                                 ? 1 : (line_w + term_w - 1) / term_w;
         }
@@ -537,8 +539,10 @@ static void write_term_msg(struct mp_log *log, int lev, bstr text, bstr *out)
 
     if (lev == MSGL_STATUS) {
         int line_w = 0;
+        bool clip = bstr_eatstart0(&str, TERM_MSG_0);
         if (str.len && print_term)
-            append_terminal_line(log, lev, str, &root->term_msg_tmp, &line_w);
+            append_terminal_line(log, lev, str, &root->term_msg_tmp, &line_w,
+                                 clip && term_w ? term_w : INT_MAX);
         term_msg_lines += !term_w ? (str.len ? 1 : 0)
                                   : (line_w + term_w - 1) / term_w;
     } else if (str.len) {
@@ -570,7 +574,10 @@ void mp_msg_va(struct mp_log *log, int lev, const char *format, va_list va)
         bstr_xappend(root, &root->buffer, log->partial[lev]);
     log->partial[lev].len = 0;
 
-    bstr_xappend_vasprintf(root, &root->buffer, format, va);
+    if (bstr_xappend_vasprintf(root, &root->buffer, format, va) < 0) {
+        bstr_xappend(root, &root->buffer, bstr0("format error: "));
+        bstr_xappend(root, &root->buffer, bstr0(format));
+    }
 
     // Remember last status message and restore it to ensure that it is
     // always displayed
@@ -589,16 +596,15 @@ void mp_msg_va(struct mp_log *log, int lev, const char *format, va_list va)
     } else {
         write_term_msg(log, lev, root->buffer, &root->term_msg);
 
-        root->term_status_msg.len = 0;
-        if (lev != MSGL_STATUS && root->status_line.len && root->status_log &&
-            is_status_output(root, lev) && test_terminal_level(root->status_log, MSGL_STATUS))
-        {
-            write_term_msg(root->status_log, MSGL_STATUS, root->status_line,
-                           &root->term_status_msg);
-        }
-
         FILE *stream = term_msg_fp(root, lev);
         if (root->term_msg.len) {
+            root->term_status_msg.len = 0;
+            if (lev != MSGL_STATUS && root->status_line.len && root->status_log &&
+                is_status_output(root, lev) && test_terminal_level(root->status_log, MSGL_STATUS))
+            {
+                write_term_msg(root->status_log, MSGL_STATUS, root->status_line,
+                               &root->term_status_msg);
+            }
             fwrite(root->term_msg.start, root->term_msg.len, 1, stream);
             if (root->term_status_msg.len)
                 fwrite(root->term_status_msg.start, root->term_status_msg.len, 1, stream);
@@ -630,7 +636,7 @@ static void destroy_log(void *ptr)
 struct mp_log *mp_log_new(void *talloc_ctx, struct mp_log *parent,
                           const char *name)
 {
-    assert(parent);
+    mp_assert(parent);
     struct mp_log *log = talloc_zero(talloc_ctx, struct mp_log);
     if (!parent->root)
         return log; // same as null_log
@@ -664,7 +670,7 @@ struct mp_log *mp_log_new(void *talloc_ctx, struct mp_log *parent,
 
 void mp_msg_init(struct mpv_global *global)
 {
-    assert(!global->log);
+    mp_assert(!global->log);
 
     struct mp_log_root *root = talloc_zero(NULL, struct mp_log_root);
     *root = (struct mp_log_root){
@@ -891,7 +897,7 @@ void mp_msg_uninit(struct mpv_global *global)
     terminate_log_file_thread(root);
     mp_msg_log_buffer_destroy(root->early_buffer);
     mp_msg_log_buffer_destroy(root->early_filebuffer);
-    assert(root->num_buffers == 0);
+    mp_assert(root->num_buffers == 0);
     if (root->stats_file)
         fclose(root->stats_file);
     talloc_free(root->stats_path);
@@ -935,7 +941,7 @@ static void mp_msg_set_early_logging_raw(struct mpv_global *global, bool enable,
             struct mp_log_buffer *buf =
                 mp_msg_log_buffer_new(global, size, level, NULL, NULL);
             mp_mutex_lock(&root->lock);
-            assert(!*root_logbuf); // no concurrent calls to this function
+            mp_assert(!*root_logbuf); // no concurrent calls to this function
             *root_logbuf = buf;
         } else {
             struct mp_log_buffer *buf = *root_logbuf;
@@ -986,7 +992,7 @@ struct mp_log_buffer *mp_msg_log_buffer_new(struct mpv_global *global,
         }
     }
 
-    assert(size > 0);
+    mp_assert(size > 0);
 
     struct mp_log_buffer *buffer = talloc_ptrtype(NULL, buffer);
     *buffer = (struct mp_log_buffer) {
@@ -1012,7 +1018,7 @@ void mp_msg_log_buffer_resize(struct mp_log_buffer *buffer, int size)
 {
     mp_mutex_lock(&buffer->lock);
 
-    assert(size > 0);
+    mp_assert(size > 0);
     if (buffer->capacity < size &&
         buffer->entry0 + buffer->num_entries <= buffer->capacity) {
         // shortcut if buffer doesn't wrap

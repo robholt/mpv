@@ -44,11 +44,13 @@ enum dir_mode {
 };
 
 enum autocreate_mode {
-    AUTO_NONE  = 0,
-    AUTO_VIDEO = 1 << 0,
-    AUTO_AUDIO = 1 << 1,
-    AUTO_IMAGE = 1 << 2,
-    AUTO_ANY   = 1 << 3,
+    AUTO_NONE     = 0,
+    AUTO_VIDEO    = 1 << 0,
+    AUTO_AUDIO    = 1 << 1,
+    AUTO_IMAGE    = 1 << 2,
+    AUTO_ARCHIVE  = 1 << 3,
+    AUTO_PLAYLIST = 1 << 4,
+    AUTO_ANY      = 1 << 5,
 };
 
 #define OPT_BASE_STRUCT struct demux_playlist_opts
@@ -72,9 +74,10 @@ struct m_sub_options demux_playlist_conf = {
     .defaults = &(const struct demux_playlist_opts){
         .dir_mode = DIR_AUTO,
         .directory_filter = (char *[]){
-            "video", "audio", "image", NULL
+            "video", "audio", "image", "archive", "playlist", NULL
         },
     },
+    .change_flags = UPDATE_DEMUXER,
 };
 
 static bool check_mimetype(struct stream *s, const char *const *list)
@@ -416,12 +419,30 @@ static bool test_path(struct pl_parser *p, char *path, int autocreate)
     if (autocreate & AUTO_ANY)
         return true;
 
-    bstr ext = bstr_get_ext(bstr0(path));
+    bstr bpath = bstr0(path);
+    bstr bstream_path = bstr0(p->real_stream->path);
+
+    // When opening a file from cwd, 'path' starts with "./" while stream->path
+    // matches what the user passed as arg. So it may or not not contain ./.
+    // Strip it from both to make the comparison work.
+    if (!mp_path_is_absolute(bstream_path)) {
+        bstr_eatstart0(&bpath, "./");
+        bstr_eatstart0(&bstream_path, "./");
+    }
+
+    if (!bstrcmp(bpath, bstream_path))
+        return true;
+
+    bstr ext = bstr_get_ext(bpath);
     if (autocreate & AUTO_VIDEO && str_in_list(ext, p->mp_opts->video_exts))
         return true;
     if (autocreate & AUTO_AUDIO && str_in_list(ext, p->mp_opts->audio_exts))
         return true;
     if (autocreate & AUTO_IMAGE && str_in_list(ext, p->mp_opts->image_exts))
+        return true;
+    if (autocreate & AUTO_ARCHIVE && str_in_list(ext, p->mp_opts->archive_exts))
+        return true;
+    if (autocreate & AUTO_PLAYLIST && str_in_list(ext, p->mp_opts->playlist_exts))
         return true;
 
     return false;
@@ -506,6 +527,10 @@ static enum autocreate_mode get_directory_filter(struct pl_parser *p)
         autocreate |= AUTO_AUDIO;
     if (str_in_list(bstr0("image"), p->opts->directory_filter))
         autocreate |= AUTO_IMAGE;
+    if (str_in_list(bstr0("archive"), p->opts->directory_filter))
+        autocreate |= AUTO_ARCHIVE;
+    if (str_in_list(bstr0("playlist"), p->opts->directory_filter))
+        autocreate |= AUTO_PLAYLIST;
     return autocreate;
 }
 
@@ -528,11 +553,14 @@ static int parse_dir(struct pl_parser *p)
                 autocreate = AUTO_AUDIO;
             } else if (str_in_list(ext, p->mp_opts->image_exts)) {
                 autocreate = AUTO_IMAGE;
+            } else if (str_in_list(ext, p->mp_opts->archive_exts)) {
+                autocreate = AUTO_ARCHIVE;
+            } else if (str_in_list(ext, p->mp_opts->playlist_exts)) {
+                autocreate = AUTO_PLAYLIST;
             }
             break;
         }
-        int flags = STREAM_ORIGIN_DIRECT | STREAM_READ | STREAM_LOCAL_FS_ONLY |
-                    STREAM_LESS_NOISE;
+        int flags = STREAM_READ_FILE_FLAGS_DEFAULT;
         bstr dir = mp_dirname(p->real_stream->url);
         if (!dir.len)
             autocreate = AUTO_NONE;
@@ -672,7 +700,7 @@ static int open_file(struct demuxer *demuxer, enum demux_check check)
         bstr proto = mp_split_proto(bstr0(demuxer->filename), NULL);
         // Don't add base path to self-expanding protocols
         if (bstrcasecmp0(proto, "memory") && bstrcasecmp0(proto, "lavf") &&
-            bstrcasecmp0(proto, "hex"))
+            bstrcasecmp0(proto, "hex") && bstrcasecmp0(proto, "data"))
         {
             playlist_add_base_path(p->pl, mp_dirname(demuxer->filename));
         }

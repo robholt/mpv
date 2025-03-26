@@ -7,6 +7,15 @@
 #include "options/m_option.h"
 
 struct mp_image_pool;
+enum mp_imgfmt;
+
+struct mp_conversion_filter {
+    // Name of the conversion filter.
+    const char *name;
+
+    // Arguments for the conversion filter.
+    char **args;
+};
 
 struct mp_hwdec_ctx {
     const char *driver_name; // NULL if unknown/not loaded
@@ -20,14 +29,18 @@ struct mp_hwdec_ctx {
     // HW format used by the hwdec
     int hw_imgfmt;
 
-    // List of support software formats when doing hwuploads.
+    // Callback to test if the format can be uploaded.
     // If NULL, all possible hwuploads are assumed to be supported.
-    const int *supported_hwupload_formats;
+    bool (*try_upload)(void *p, enum mp_imgfmt src_fmt, enum mp_imgfmt dst_fmt);
 
-    // The name of this hwdec's matching conversion filter if available.
+    // Private data for try_upload.
+    void *try_upload_priv;
+
+    // Getter for conversion filter description, or NULL.
     // This will be used for hardware conversion of frame formats.
-    // NULL otherwise.
-    const char *conversion_filter_name;
+    // If available the talloc allocated mp_conversion_filter is returned,
+    // Caller is responsible to free the allocation.
+    struct mp_conversion_filter *(*get_conversion_filter)(int imgfmt);
 
     // The libavutil hwconfig to be used when querying constraints for the
     // conversion filter. Can be NULL if no special config is required.

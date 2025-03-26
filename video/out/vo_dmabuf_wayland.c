@@ -24,7 +24,6 @@
 #include <va/va_drmcommon.h>
 #endif
 
-#include "common/global.h"
 #include "gpu/hwdec.h"
 #include "gpu/video.h"
 #include "mpv_talloc.h"
@@ -101,6 +100,8 @@ struct priv {
     bool destroy_buffers;
     bool force_window;
     enum hwdec_type hwdec_type;
+
+    struct mp_image_params target_params;
     uint32_t drm_format;
     uint64_t drm_modifier;
 };
@@ -199,7 +200,7 @@ static void vaapi_dmabuf_importer(struct buffer *buf, struct mp_image *src,
         goto done;
     }
     buf->drm_format = desc.layers[layer_no].drm_format;
-    if (!ra_compatible_format(p->ctx->ra, src->params.hw_subfmt, buf->drm_format, desc.objects[0].drm_format_modifier)) {
+    if (!ra_compatible_format(p->ctx->ra, buf->drm_format, desc.objects[0].drm_format_modifier)) {
         MP_VERBOSE(vo, "%s(%016" PRIx64 ") is not supported.\n",
                    mp_tag_str(buf->drm_format), desc.objects[0].drm_format_modifier);
         buf->drm_format = 0;
@@ -387,10 +388,6 @@ static void destroy_osd_buffers(struct vo *vo)
     if (!vo->wl)
         return;
 
-    // Remove any existing buffer before we destroy them.
-    wl_surface_attach(vo->wl->osd_surface, NULL, 0, 0);
-    wl_surface_commit(vo->wl->osd_surface);
-
     struct priv *p = vo->priv;
     struct osd_buffer *osd_buf, *tmp;
     wl_list_for_each_safe(osd_buf, tmp, &p->osd_buffer_list, link) {
@@ -452,7 +449,7 @@ static void create_shm_pool(struct vo *vo)
     struct vo_wayland_state *wl = vo->wl;
     struct priv *p = vo->priv;
 
-    int stride = MP_ALIGN_UP(vo->dwidth * 4, 16);
+    int stride = MP_ALIGN_UP(vo->dwidth * 4, MP_IMAGE_BYTE_ALIGN);
     size_t size = vo->dheight * stride;
     int fd = vo_wayland_allocate_memfd(vo, size);
     if (fd < 0)
@@ -539,6 +536,12 @@ static void resize(struct vo *vo)
                                                   lround(vo->dheight / wl->scaling_factor));
     wl_subsurface_set_position(wl->osd_subsurface, lround((0 - dst.x0) / wl->scaling_factor), lround((0 - dst.y0) / wl->scaling_factor));
     set_viewport_source(vo, src);
+
+    mp_mutex_lock(&vo->params_mutex);
+    vo->target_params->w = mp_rect_w(dst);
+    vo->target_params->h = mp_rect_h(dst);
+    vo->target_params->rotate = (vo->params->rotate % 90) * 90;
+    mp_mutex_unlock(&vo->params_mutex);
 }
 
 static bool draw_osd(struct vo *vo, struct mp_image *cur, double pts)
@@ -585,7 +588,7 @@ done:
     return draw;
 }
 
-static void draw_frame(struct vo *vo, struct vo_frame *frame)
+static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 {
     struct priv *p = vo->priv;
     struct vo_wayland_state *wl = vo->wl;
@@ -596,7 +599,7 @@ static void draw_frame(struct vo *vo, struct vo_frame *frame)
     if (!vo_wayland_check_visible(vo)) {
         if (frame->current)
             talloc_free(frame);
-        return;
+        return VO_FALSE;
     }
 
     if (p->destroy_buffers)
@@ -613,6 +616,7 @@ static void draw_frame(struct vo *vo, struct vo_frame *frame)
         buf = buffer_get(vo, frame);
 
         if (buf && buf->frame) {
+            vo_wayland_handle_color(wl);
             struct mp_image *image = buf->frame->current;
             wl_surface_attach(wl->video_surface, buf->buffer, 0, 0);
             wl_surface_damage_buffer(wl->video_surface, 0, 0, image->w,
@@ -633,17 +637,19 @@ static void draw_frame(struct vo *vo, struct vo_frame *frame)
             p->osd_surface_is_mapped = false;
         }
     }
+
+    return VO_TRUE;
 }
 
 static void flip_page(struct vo *vo)
 {
     struct vo_wayland_state *wl = vo->wl;
 
-    wl_surface_commit(wl->video_surface);
     wl_surface_commit(wl->osd_surface);
+    wl_surface_commit(wl->video_surface);
     wl_surface_commit(wl->surface);
 
-    if (!wl->opts->wl_disable_vsync)
+    if (wl->opts->wl_internal_vsync)
         vo_wayland_wait_frame(wl);
 
     if (wl->use_present)
@@ -681,7 +687,7 @@ static int reconfig(struct vo *vo, struct mp_image *img)
         return VO_ERROR;
     }
 
-    if (!ra_compatible_format(p->ctx->ra, img->params.hw_subfmt, p->drm_format, p->drm_modifier)) {
+    if (!ra_compatible_format(p->ctx->ra, p->drm_format, p->drm_modifier)) {
         MP_ERR(vo, "Format '%s' with modifier '(%016" PRIx64 ")' is not supported by"
                " the compositor.\n", mp_tag_str(p->drm_format), p->drm_modifier);
         return VO_ERROR;
@@ -691,6 +697,17 @@ static int reconfig(struct vo *vo, struct mp_image *img)
 done:
     if (!vo_wayland_reconfig(vo))
         return VO_ERROR;
+
+    mp_mutex_lock(&vo->params_mutex);
+    p->target_params = img->params;
+    // Restore fallback layer parameters if available.
+    mp_image_params_restore_dovi_mapping(&p->target_params);
+    // Strip metadata that is not understood anyway.
+    struct pl_hdr_metadata *hdr = &p->target_params.color.hdr;
+    hdr->scene_max[0] = hdr->scene_max[1] = hdr->scene_max[2] = 0;
+    hdr->scene_avg = hdr->max_pq_y = hdr->avg_pq_y = 0;
+    vo->target_params = &p->target_params;
+    mp_mutex_unlock(&vo->params_mutex);
 
     wl_surface_set_buffer_transform(vo->wl->video_surface, img->params.rotate / 90);
 
@@ -758,7 +775,7 @@ static int preinit(struct vo *vo)
     if (!p->ctx)
         goto err;
 
-    assert(p->ctx->ra);
+    mp_assert(p->ctx->ra);
 
     if (!vo->wl->dmabuf || !vo->wl->dmabuf_feedback) {
         MP_FATAL(vo->wl, "Compositor doesn't support the %s (ver. 4) protocol!\n",
@@ -784,7 +801,7 @@ static int preinit(struct vo *vo)
     } else {
         int width = 1;
         int height = 1;
-        int stride = MP_ALIGN_UP(width * 4, 16);
+        int stride = MP_ALIGN_UP(width * 4, MP_IMAGE_BYTE_ALIGN);
         int fd = vo_wayland_allocate_memfd(vo, stride);
         if (fd < 0)
             goto err;
@@ -845,8 +862,7 @@ err:
 const struct vo_driver video_out_dmabuf_wayland = {
     .description = "Wayland dmabuf video output",
     .name = "dmabuf-wayland",
-    .caps = VO_CAP_ROTATE90,
-    .frame_owner = true,
+    .caps = VO_CAP_ROTATE90 | VO_CAP_FRAMEOWNER,
     .preinit = preinit,
     .query_format = query_format,
     .reconfig2 = reconfig,

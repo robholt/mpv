@@ -55,7 +55,7 @@ const struct filter_kernel *mp_find_filter_kernel(enum scaler_filter function)
 bool mp_init_filter(struct filter_kernel *filter, const int *sizes,
                     double inv_scale)
 {
-    assert(filter->f.radius > 0);
+    mp_assert(filter->f.radius > 0);
     double blur = filter->f.blur > 0.0 ? filter->f.blur : 1.0;
     filter->radius = blur * filter->f.radius;
 
@@ -127,7 +127,7 @@ static double sample_filter(struct filter_kernel *filter, double x)
 static void mp_compute_weights(struct filter_kernel *filter, double f,
                                float *out_w)
 {
-    assert(filter->size > 0);
+    mp_assert(filter->size > 0);
     double sum = 0;
     for (int n = 0; n < filter->size; n++) {
         double x = f - (n - filter->size / 2 + 1);
@@ -365,14 +365,18 @@ const struct filter_kernel mp_filter_kernels[] = {
     {{SCALER_JINC,        JINC_R3, jinc, .resizable = true}, .polar = true},
     {{SCALER_EWA_LANCZOS, JINC_R3, jinc, .resizable = true}, .polar = true, .window = WINDOW_JINC},
     {{SCALER_EWA_HANNING, JINC_R3, jinc, .resizable = true}, .polar = true, .window = WINDOW_HANNING},
+    // See <https://legacy.imagemagick.org/Usage/filter/nicolas/#upsampling>
     {{SCALER_EWA_GINSENG, JINC_R3, jinc, .resizable = true}, .polar = true, .window = WINDOW_SINC},
     // Slightly sharpened to minimize the 1D step response error (to better
-    // preserve horizontal/vertical lines)
+    // preserve horizontal/vertical lines). Blur value determined by method
+    // originally developed by Nicolas Robidoux for Image Magick, see:
+    //   <https://www.imagemagick.org/discourse-server/viewtopic.php?p=89068#p89068>
     {{SCALER_EWA_LANCZOSSHARP, JINC_R3, jinc, .blur = 0.9812505837223707, .resizable = true},
         .polar = true, .window = WINDOW_JINC},
     // Similar to the above, but sharpened substantially to the point of
     // minimizing the total impulse response error on an integer grid. Tends
-    // to preserve hash patterns well. Very sharp but rings a lot.
+    // to preserve hash patterns well. Very sharp but rings a lot. See:
+    //   <https://www.imagemagick.org/discourse-server/viewtopic.php?p=128587#p128587>
     {{SCALER_EWA_LANCZOS4SHARPEST, JINC_R4, jinc, .blur = 0.8845120932605005, .resizable = true},
         .polar = true, .window = WINDOW_JINC},
     // Similar to the above, but softened instead, to make even/odd integer

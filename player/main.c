@@ -30,13 +30,13 @@
 #include "mpv_talloc.h"
 
 #include "misc/dispatch.h"
+#include "misc/random.h"
 #include "misc/thread_pool.h"
 #include "osdep/io.h"
 #include "osdep/terminal.h"
 #include "osdep/threads.h"
 #include "osdep/timer.h"
 #include "osdep/main-fn.h"
-#include "osdep/win32/smtc.h"
 
 #include "common/av_log.h"
 #include "common/codecs.h"
@@ -57,6 +57,7 @@
 #include "options/options.h"
 #include "options/path.h"
 #include "input/input.h"
+#include "demux/packet_pool.h"
 
 #include "audio/out/ao.h"
 #include "misc/thread_tools.h"
@@ -71,6 +72,10 @@
 static const char def_config[] =
 #include "etc/builtin.conf.inc"
 ;
+
+#if HAVE_WIN32_SMTC
+#include "osdep/win32/smtc.h"
+#endif
 
 #if HAVE_COCOA
 #include "osdep/mac/app_bridge.h"
@@ -193,11 +198,12 @@ void mp_destroy(struct MPContext *mpctx)
     }
 
     mp_input_uninit(mpctx->input);
+    mp_clipboard_destroy(mpctx->clipboard);
 
     uninit_libav(mpctx->global);
 
     mp_msg_uninit(mpctx->global);
-    assert(!mpctx->num_abort_list);
+    mp_assert(!mpctx->num_abort_list);
     talloc_free(mpctx->abort_list);
     mp_mutex_destroy(&mpctx->abort_lock);
     talloc_free(mpctx->mconfig); // destroy before dispatch
@@ -254,12 +260,11 @@ struct MPContext *mp_create(void)
     }
 
     char *enable_talloc = getenv("MPV_LEAK_REPORT");
-    if (!enable_talloc)
-        enable_talloc = HAVE_TA_LEAK_REPORT ? "1" : "0";
-    if (strcmp(enable_talloc, "1") == 0)
+    if (enable_talloc && strcmp(enable_talloc, "1") == 0)
         talloc_enable_leak_report();
 
     mp_time_init();
+    mp_rand_seed(0);
 
     struct MPContext *mpctx = talloc(NULL, MPContext);
     *mpctx = (struct MPContext){
@@ -278,6 +283,7 @@ struct MPContext *mp_create(void)
 
     mpctx->global = talloc_zero(mpctx, struct mpv_global);
 
+    demux_packet_pool_init(mpctx->global);
     stats_global_init(mpctx->global);
 
     // Nothing must call mp_msg*() and related before this
@@ -327,7 +333,7 @@ int mp_initialize(struct MPContext *mpctx, char **options)
 {
     struct MPOpts *opts = mpctx->opts;
 
-    assert(!mpctx->initialized);
+    mp_assert(!mpctx->initialized);
 
     // Preparse the command line, so we can init the terminal early.
     if (options) {
@@ -377,6 +383,7 @@ int mp_initialize(struct MPContext *mpctx, char **options)
     m_config_set_update_dispatch_queue(mpctx->mconfig, mpctx->dispatch);
     // Run all update handlers.
     mp_option_change_callback(mpctx, NULL, UPDATE_OPTS_MASK, false);
+    handle_option_callbacks(mpctx);
 
     if (handle_help_options(mpctx))
         return 1; // help
@@ -399,10 +406,12 @@ int mp_initialize(struct MPContext *mpctx, char **options)
     cocoa_set_mpv_handle(ctx);
 #endif
 
-#if defined(HAVE_WIN32_SMTC) && HAVE_WIN32_SMTC
-    if (opts->media_controls == 2 || (mpctx->is_cli && opts->media_controls == 1))
+#if HAVE_WIN32_SMTC
+    if (opts->media_controls)
         mp_smtc_init(mp_new_client(mpctx->clients, "SystemMediaTransportControls"));
 #endif
+
+    mpctx->ipc_ctx = mp_init_ipc(mpctx->clients, mpctx->global);
 
     if (opts->encode_opts->file && opts->encode_opts->file[0]) {
         mpctx->encode_lavc_ctx = encode_lavc_init(mpctx->global);
@@ -410,8 +419,6 @@ int mp_initialize(struct MPContext *mpctx, char **options)
             MP_INFO(mpctx, "Encoding initialization failed.\n");
             return -1;
         }
-        m_config_set_profile(mpctx->mconfig, "encoding", 0);
-        mp_input_enable_section(mpctx->input, "encode", MP_INPUT_EXCLUSIVE);
     }
 
     mp_load_scripts(mpctx);

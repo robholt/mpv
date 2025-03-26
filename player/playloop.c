@@ -121,6 +121,14 @@ static void mp_process_input(struct MPContext *mpctx)
         mp_notify(mpctx, MP_EVENT_INPUT_PROCESSED, NULL);
 }
 
+// Process any queued option callbacks.
+void handle_option_callbacks(struct MPContext *mpctx)
+{
+    for (int i = 0; i < mpctx->num_option_callbacks; i++)
+        mp_option_run_callback(mpctx, &mpctx->option_callbacks[i]);
+    mpctx->num_option_callbacks = 0;
+}
+
 double get_relative_time(struct MPContext *mpctx)
 {
     int64_t new_time = mp_time_ns();
@@ -203,19 +211,28 @@ void update_screensaver_state(struct MPContext *mpctx)
                                                    : VOCTRL_KILL_SCREENSAVER, NULL);
 }
 
-void add_step_frame(struct MPContext *mpctx, int dir)
+void add_step_frame(struct MPContext *mpctx, int dir, bool use_seek)
 {
     if (!mpctx->vo_chain)
         return;
-    if (dir > 0) {
-        mpctx->step_frames += 1;
+    if (dir > 0 && !use_seek) {
+        mpctx->step_frames += dir;
         set_pause_state(mpctx, false);
-    } else if (dir < 0) {
+    } else {
         if (!mpctx->hrseek_active) {
-            queue_seek(mpctx, MPSEEK_BACKSTEP, 0, MPSEEK_VERY_EXACT, 0);
+            queue_seek(mpctx, MPSEEK_FRAMESTEP, dir, MPSEEK_VERY_EXACT, 0);
             set_pause_state(mpctx, true);
         }
     }
+}
+
+void step_frame_mute(struct MPContext *mpctx, bool mute)
+{
+    if (!mpctx->ao_chain || !mpctx->ao_chain->ao)
+        return;
+
+    float gain = mute ? 0 : audio_get_gain(mpctx);
+    ao_set_gain(mpctx->ao_chain->ao, gain);
 }
 
 // Clear some playback-related fields on file loading or after seeks.
@@ -258,6 +275,16 @@ void reset_playback_state(struct MPContext *mpctx)
     update_core_idle_state(mpctx);
 }
 
+static double calculate_framestep_pts(MPContext *mpctx, double current_time,
+                                      int step_frames)
+{
+    // Crude guess at the pts. Use current_time if step_frames is -1.
+    int previous_frame = mpctx->num_past_frames - 1;
+    int offset = step_frames == -1 ? 0 : step_frames;
+    double pts = mpctx->past_frames[previous_frame].approx_duration * offset;
+    return current_time + pts;
+}
+
 static void mp_seek(MPContext *mpctx, struct seek_params seek)
 {
     struct MPOpts *opts = mpctx->opts;
@@ -285,8 +312,9 @@ static void mp_seek(MPContext *mpctx, struct seek_params seek)
     case MPSEEK_ABSOLUTE:
         seek_pts = seek.amount;
         break;
-    case MPSEEK_BACKSTEP:
-        seek_pts = current_time;
+    case MPSEEK_FRAMESTEP:
+        seek_pts = calculate_framestep_pts(mpctx, current_time,
+                                           (int)seek.amount);
         hr_seek_very_exact = true;
         break;
     case MPSEEK_RELATIVE:
@@ -389,7 +417,7 @@ static void mp_seek(MPContext *mpctx, struct seek_params seek)
 
     if (hr_seek) {
         mpctx->hrseek_active = true;
-        mpctx->hrseek_backstep = seek.type == MPSEEK_BACKSTEP;
+        mpctx->hrseek_backstep = seek.type == MPSEEK_FRAMESTEP && seek.amount == -1;
         mpctx->hrseek_pts = seek_pts * mpctx->play_dir;
 
         // allow decoder to drop frames before hrseek_pts
@@ -445,7 +473,7 @@ void queue_seek(struct MPContext *mpctx, enum seek_type type, double amount,
         return;
     case MPSEEK_ABSOLUTE:
     case MPSEEK_FACTOR:
-    case MPSEEK_BACKSTEP:
+    case MPSEEK_FRAMESTEP:
     case MPSEEK_CHAPTER:
         *seek = (struct seek_params) {
             .type = type,
@@ -541,7 +569,7 @@ double get_current_pos_ratio(struct MPContext *mpctx, bool use_range)
     struct demuxer *demuxer = mpctx->demuxer;
     if (!demuxer)
         return -1;
-    double ans = -1;
+    double ret = -1;
     double start = 0;
     double len = get_time_length(mpctx);
     if (use_range) {
@@ -556,18 +584,18 @@ double get_current_pos_ratio(struct MPContext *mpctx, bool use_range)
     }
     double pos = get_current_time(mpctx);
     if (len > 0)
-        ans = MPCLAMP((pos - start) / len, 0, 1);
-    if (ans < 0) {
+        ret = MPCLAMP((pos - start) / len, 0, 1);
+    if (ret < 0) {
         int64_t size = demuxer->filesize;
         if (size > 0 && demuxer->filepos >= 0)
-            ans = MPCLAMP(demuxer->filepos / (double)size, 0, 1);
+            ret = MPCLAMP(demuxer->filepos / (double)size, 0, 1);
     }
     if (use_range) {
         if (mpctx->opts->play_frames > 0)
-            ans = MPMAX(ans, 1.0 -
+            ret = MPMAX(ret, 1.0 -
                     mpctx->max_frames / (double) mpctx->opts->play_frames);
     }
-    return ans;
+    return ret;
 }
 
 // -2 is no chapters, -1 is before first chapter
@@ -659,9 +687,6 @@ static void handle_osd_redraw(struct MPContext *mpctx)
     if (!want_redraw)
         return;
     vo_redraw(mpctx->video_out);
-    // Even though we just redrew, it may need to be done again for certain
-    // cases of subtitles on an image.
-    redraw_subs(mpctx);
 }
 
 static void clear_underruns(struct MPContext *mpctx)
@@ -862,6 +887,8 @@ static void handle_vo_events(struct MPContext *mpctx)
         mp_notify(mpctx, MP_EVENT_WIN_STATE2, NULL);
     if (events & VO_EVENT_FOCUS)
         mp_notify(mpctx, MP_EVENT_FOCUS, NULL);
+    if (events & VO_EVENT_AMBIENT_LIGHTING_CHANGED)
+        mp_notify(mpctx, MP_EVENT_AMBIENT_LIGHTING_CHANGED, NULL);
 }
 
 static void handle_sstep(struct MPContext *mpctx)
@@ -1214,6 +1241,12 @@ static void handle_eof(struct MPContext *mpctx)
     }
 }
 
+static void handle_clipboard_updates(struct MPContext *mpctx)
+{
+    if (mp_clipboard_data_changed(mpctx->clipboard))
+        mp_notify_property(mpctx, "clipboard");
+}
+
 void run_playloop(struct MPContext *mpctx)
 {
     if (encode_lavc_didfail(mpctx->encode_lavc_ctx)) {
@@ -1238,6 +1271,8 @@ void run_playloop(struct MPContext *mpctx)
     handle_playback_time(mpctx);
 
     handle_dummy_ticks(mpctx);
+
+    handle_clipboard_updates(mpctx);
 
     update_osd_msg(mpctx);
 
@@ -1271,6 +1306,8 @@ void run_playloop(struct MPContext *mpctx)
 
     mp_process_input(mpctx);
 
+    handle_option_callbacks(mpctx);
+
     handle_chapter_change(mpctx);
 
     handle_force_window(mpctx, false);
@@ -1279,8 +1316,10 @@ void run_playloop(struct MPContext *mpctx)
 void mp_idle(struct MPContext *mpctx)
 {
     handle_dummy_ticks(mpctx);
+    handle_clipboard_updates(mpctx);
     mp_wait_events(mpctx);
     mp_process_input(mpctx);
+    handle_option_callbacks(mpctx);
     handle_command_updates(mpctx);
     handle_update_cache(mpctx);
     handle_cursor_autohide(mpctx);

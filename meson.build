@@ -2,7 +2,7 @@ project('mpv',
         'c',
         license: ['GPL2+', 'LGPL2.1+'],
         version: files('./MPV_VERSION'),
-        meson_version: '>=0.62.0',
+        meson_version: '>=1.3.0',
         default_options: [
             'backend_max_links=16',
             'buildtype=debugoptimized',
@@ -100,12 +100,14 @@ sources = files(
     'demux/demux_mf.c',
     'demux/demux_mkv.c',
     'demux/demux_mkv_timeline.c',
+    'demux/demux_mpv.c',
     'demux/demux_null.c',
     'demux/demux_playlist.c',
     'demux/demux_raw.c',
     'demux/demux_timeline.c',
     'demux/ebml.c',
     'demux/packet.c',
+    'demux/packet_pool.c',
     'demux/timeline.c',
 
     ## Filters
@@ -134,6 +136,7 @@ sources = files(
     ## Misc
     'misc/bstr.c',
     'misc/charset_conv.c',
+    'misc/codepoint_width.c',
     'misc/dispatch.c',
     'misc/io_utils.c',
     'misc/json.c',
@@ -172,6 +175,10 @@ sources = files(
     'player/sub.c',
     'player/video.c',
 
+    ## clipboard
+    'player/clipboard/clipboard.c',
+    'player/clipboard/clipboard-vo.c',
+
     ## Streams
     'stream/cookies.c',
     'stream/stream.c',
@@ -183,6 +190,7 @@ sources = files(
     'stream/stream_lavf.c',
     'stream/stream_memory.c',
     'stream/stream_mf.c',
+    'stream/stream_mpv.c',
     'stream/stream_null.c',
     'stream/stream_slice.c',
 
@@ -250,14 +258,13 @@ sources = files(
 
     ## osdep
     'osdep/io.c',
-    'osdep/semaphore-mac.c',
     'osdep/subprocess.c',
     'osdep/timer.c',
 
     ## tree_allocator
     'ta/ta.c',
     'ta/ta_talloc.c',
-    'ta/ta_utils.c'
+    'ta/ta_utils.c',
 )
 
 
@@ -299,6 +306,11 @@ if cc.has_multi_arguments('-Wformat', '-Werror=format-security')
     flags += '-Werror=format-security'
 endif
 
+if cc.get_id() == 'gcc'
+    # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=66425
+    flags +='-Wno-unused-result'
+endif
+
 darwin = host_machine.system() == 'darwin'
 win32 = host_machine.system() == 'cygwin' or host_machine.system() == 'windows'
 posix = not win32
@@ -313,6 +325,9 @@ mswin_flags = ['-D_WIN32_WINNT=0x0A00', '-DWINVER=0x0A00', '-DUNICODE',
                '-D_CRT_DECLARE_NONSTDC_NAMES', '-D_CRT_NONSTDC_NO_WARNINGS',
                '-D_CRT_SECURE_NO_WARNINGS', '-DWINRT_NO_SOURCE_LOCATION']
 
+# https://developercommunity.visualstudio.com/t/NAN-is-no-longer-compile-time-constant-i/10688907
+mswin_flags += '-D_UCRT_NOISY_NAN'
+
 if host_machine.system() == 'windows'
     flags += [mswin_flags]
     flags_c += ['-U__STRICT_ANSI__']
@@ -326,20 +341,15 @@ if posix
     flags += ['-D_GNU_SOURCE']
 endif
 
-if cc.has_link_argument('-Wl,-z,noexecstack')
-    link_flags += '-Wl,-z,noexecstack'
-endif
-
-if cc.has_link_argument('-Wl,--nxcompat,--no-seh,--dynamicbase')
-    link_flags += '-Wl,--nxcompat,--no-seh,--dynamicbase'
-endif
+link_flags += cc.get_supported_link_arguments(['-Wl,--nxcompat,--no-seh,--dynamicbase',
+                                               '-Wl,-z,noexecstack'])
 
 features += {'build-date': get_option('build-date')}
 if not features['build-date']
     flags += '-DNO_BUILD_TIMESTAMPS'
 endif
 
-features += {'ta-leak-report': get_option('ta-leak-report')}
+features += {'disable-packet-pool': get_option('disable-packet-pool')}
 
 libdl = dependency('dl', required: false)
 features += {'libdl': libdl.found()}
@@ -403,13 +413,14 @@ if features['cocoa']
     sources += files('osdep/language-mac.c',
                      'osdep/path-mac.m',
                      'osdep/utils-mac.c',
-                     'osdep/mac/app_bridge.m')
+                     'osdep/mac/app_bridge.m',
+                     'player/clipboard/clipboard-mac.m')
     main_fn_source = files('osdep/main-fn-mac.c')
 endif
 
 if posix
     path_source = files('osdep/path-unix.c')
-    if cc.has_function('fork', prefix : '#include <unistd.h>')
+    if not get_option('fuzzers') and cc.has_function('fork', prefix : '#include <unistd.h>')
         sources += files('osdep/subprocess-posix.c')
     else
         sources += files('osdep/subprocess-dummy.c')
@@ -439,7 +450,7 @@ features += {'ppoll': cc.has_function('ppoll', args: '-D_GNU_SOURCE',
 features += {'memrchr': cc.has_function('memrchr', args: '-D_GNU_SOURCE',
                                         prefix: '#include <string.h>')}
 
-cd_devices = {
+optical_devices = {
     'windows': 'D:',
     'cygwin': 'D:',
     'darwin': '/dev/disk1',
@@ -447,24 +458,10 @@ cd_devices = {
     'openbsd': '/dev/rcd0c',
     'linux': '/dev/sr0',
 }
-if host_machine.system() in cd_devices
-    cd_device = cd_devices[host_machine.system()]
+if host_machine.system() in optical_devices
+    optical_device = optical_devices[host_machine.system()]
 else
-    cd_device = '/dev/cdrom'
-endif
-
-dvd_devices = {
-    'windows': 'D:',
-    'cygwin': 'D:',
-    'darwin': '/dev/diskN',
-    'freebsd': '/dev/cd0',
-    'openbsd': '/dev/rcd0c',
-    'linux': '/dev/sr0',
-}
-if host_machine.system() in cd_devices
-    dvd_device = dvd_devices[host_machine.system()]
-else
-    dvd_device = '/dev/dvd'
+    optical_device = '/dev/cdrom'
 endif
 
 features += {'android': host_machine.system() == 'android'}
@@ -497,25 +494,28 @@ endif
 
 features += {'win32-desktop': win32 and not uwp.found()}
 if features['win32-desktop']
-    pathcch = cc.find_library('pathcch', required: false)
-    features += {'pathcch': pathcch.found()}
-    if features['pathcch']
-        dependencies += pathcch
-    endif
     win32_desktop_libs = [cc.find_library('avrt'),
                           cc.find_library('dwmapi'),
                           cc.find_library('gdi32'),
                           cc.find_library('imm32'),
                           cc.find_library('ntdll'),
                           cc.find_library('ole32'),
+                          cc.find_library('pathcch'),
+                          cc.find_library('shcore'),
+                          cc.find_library('user32'),
                           cc.find_library('uuid'),
                           cc.find_library('uxtheme'),
                           cc.find_library('version')]
     dependencies += win32_desktop_libs
     path_source = files('osdep/path-win.c')
+    if not get_option('fuzzers')
+        sources += files('osdep/subprocess-win.c')
+    else
+        sources += files('osdep/subprocess-dummy.c')
+    endif
     sources += files('input/ipc-win.c',
+                     'player/clipboard/clipboard-win.c',
                      'osdep/language-win.c',
-                     'osdep/subprocess-win.c',
                      'osdep/terminal-win.c',
                      'video/out/w32_common.c',
                      'video/out/win32/displayconfig.c',
@@ -530,8 +530,11 @@ if not posix and not features['win32-desktop']
                      'osdep/terminal-dummy.c')
 endif
 
+# media controls
 if win32
     subdir('osdep/win32')
+else
+    features += {'win32-smtc': false}
 endif
 
 features += {'glob-posix': cc.has_function('glob', prefix: '#include <glob.h>')}
@@ -568,15 +571,7 @@ features += {'bsd-fstatfs': cc.has_function('fstatfs', prefix: '#include <sys/mo
 
 features += {'linux-fstatfs': cc.has_function('fstatfs', prefix: '#include <sys/vfs.h>')}
 
-vector_attribute = '''int main() {
-float v __attribute__((vector_size(32)));
-}
-'''
-vector = get_option('vector').require(
-    cc.compiles(vector_attribute, name: 'vector check'),
-    error_message: 'the compiler does not support gcc vectors!',
-)
-features += {'vector': vector.allowed()}
+features += {'vector': cc.has_function_attribute('vector_size', required: get_option('vector'))}
 
 sources += path_source + timer_source
 
@@ -602,7 +597,8 @@ sources += [ebml_defs, ebml_types]
 
 subdir('common')
 subdir('etc')
-subdir('player')
+subdir('player/javascript')
+subdir('player/lua')
 subdir('sub')
 
 if darwin
@@ -637,10 +633,9 @@ dvdnav_opt = get_option('dvdnav').require(
     error_message: 'the build is not GPL!',
 )
 dvdnav = dependency('dvdnav', version: '>= 4.2.0', required: dvdnav_opt)
-dvdread = dependency('dvdread', version: '>= 4.1.0', required: dvdnav_opt)
-features += {'dvdnav': dvdnav.found() and dvdread.found()}
+features += {'dvdnav': dvdnav.found()}
 if features['dvdnav']
-    dependencies += [dvdnav, dvdread]
+    dependencies += dvdnav
     sources += files('stream/stream_dvdnav.c')
 endif
 
@@ -945,9 +940,11 @@ if features['direct3d']
 endif
 
 drm = dependency('libdrm', version: '>= 2.4.105', required: get_option('drm'))
-features += {'drm': drm.found() and (features['vt.h'] or features['consio.h'] or features['wsdisplay-usl-io.h'])}
+libdisplay_info = dependency('libdisplay-info', version: '>= 0.1.1', required: get_option('drm'))
+features += {'drm': drm.found() and libdisplay_info.found() and
+             (features['vt.h'] or features['consio.h'] or features['wsdisplay-usl-io.h'])}
 if features['drm']
-    dependencies += drm
+    dependencies += [drm, libdisplay_info]
     sources += files('video/drmprime.c',
                      'video/out/drm_atomic.c',
                      'video/out/drm_common.c',
@@ -1018,7 +1015,6 @@ if features['d3d11']
     sources += files('video/out/d3d11/context.c',
                      'video/out/d3d11/ra_d3d11.c')
     features += {'dxgi-debug-d3d11': cc.has_header_symbol('d3d11sdklayers.h', 'DXGI_DEBUG_D3D11')}
-    features += {'dxgi-debug': cc.has_header_symbol('dxgidebug.h', 'IID_IDXGIInfoQueue')}
 endif
 
 wayland = {
@@ -1042,6 +1038,15 @@ features += {'wayland': wayland_deps and wayland['header'] and wayland['scanner'
 
 if features['wayland']
     subdir(join_paths('video', 'out'))
+endif
+
+foreach v: ['1.39']
+    features += {'wayland-protocols-' + v.replace('.', '-'):
+        wayland['deps'][2].version().version_compare('>=' + v)}
+endforeach
+
+if features['wayland-protocols-1-39']
+    sources += files('player/clipboard/clipboard-wayland.c')
 endif
 
 features += {'memfd-create': false}
@@ -1536,7 +1541,7 @@ endif
 xcrun = find_program('xcrun', required: get_option('swift-build').require(darwin))
 swift_ver = '0.0'
 if xcrun.found()
-    swift_prog = find_program(run_command(xcrun, '-find', 'swift', check: true).stdout().strip())
+    swift_prog = find_program(run_command(xcrun, '-find', 'swiftc', check: true).stdout().strip())
     swift_ver_string = run_command(swift_prog, '-version', check: true).stdout()
     verRe = '''
 #!/usr/bin/env python3
@@ -1556,13 +1561,18 @@ swift = get_option('swift-build').require(
 )
 features += {'swift': swift.allowed()}
 
+if features['cocoa'] and not features['swift'] and get_option('cplayer')
+    error('cplayer enabled but no suitable swift version could be found or was disabled!')
+endif
+
 swift_sources = []
 if features['cocoa'] and features['swift']
     swift_sources += files('osdep/mac/application.swift',
                            'osdep/mac/app_hub.swift',
+                           'osdep/mac/clipboard.swift',
+                           'osdep/mac/dialog.swift',
                            'osdep/mac/event_helper.swift',
                            'osdep/mac/input_helper.swift',
-                           'osdep/mac/libmpv_helper.swift',
                            'osdep/mac/log_helper.swift',
                            'osdep/mac/menu_bar.swift',
                            'osdep/mac/option_helper.swift',
@@ -1607,7 +1617,8 @@ macos_cocoa_cb = get_option('macos-cocoa-cb').require(
 )
 features += {'macos-cocoa-cb': macos_cocoa_cb.allowed()}
 if features['macos-cocoa-cb']
-    swift_sources += files('video/out/cocoa_cb_common.swift',
+    swift_sources += files('osdep/mac/libmpv_helper.swift',
+                           'video/out/cocoa_cb_common.swift',
                            'video/out/mac/gl_layer.swift')
 endif
 if features['cocoa'] and features['vulkan'] and features['swift']
@@ -1693,22 +1704,10 @@ if rst2pdf.found()
 endif
 
 
-if meson.version().version_compare('>= 1.1.0')
-    configuration = meson.build_options()
-else
-    # Arbitrary hardcoded things to pass if the meson version is too
-    # old to have the build_options method.
-    configuration = 'meson configure build ' + '-Dprefix=' + get_option('prefix') + \
-                    ' -Dbuildtype=' + get_option('buildtype') + \
-                    ' -Doptimization=' + get_option('optimization')
-endif
-
-
 # Set config.h
 conf_data = configuration_data()
-conf_data.set_quoted('CONFIGURATION', configuration)
-conf_data.set_quoted('DEFAULT_DVD_DEVICE', dvd_device)
-conf_data.set_quoted('DEFAULT_CDROM_DEVICE', cd_device)
+conf_data.set_quoted('CONFIGURATION', meson.build_options())
+conf_data.set_quoted('DEFAULT_OPTICAL_DEVICE', optical_device)
 
 # Loop over all features in the build, create a define and add them to config.h
 feature_keys = []
@@ -1766,13 +1765,15 @@ if win32
 endif
 
 
-client_h_define = cc.get_define('MPV_CLIENT_API_VERSION', prefix: '#include "libmpv/client.h"',
-                                include_directories: include_directories('.'))
+incdir_public = include_directories('./include')
+client_h_define = cc.get_define('MPV_CLIENT_API_VERSION', prefix: '#include "mpv/client.h"',
+                                include_directories: incdir_public)
 major = client_h_define.split('|')[0].split('<<')[0].strip('() ')
 minor = client_h_define.split('|')[1].strip('() ')
 client_api_version = major + '.' + minor + '.0'
 
 libmpv = library('mpv', sources, dependencies: dependencies, gnu_symbol_visibility: 'hidden',
+                 include_directories: incdir_public,
                  link_args: cc.get_supported_link_arguments(['-Wl,-Bsymbolic']),
                  version: client_api_version, install: get_option('libmpv'),
                  build_by_default: get_option('libmpv'))
@@ -1783,12 +1784,12 @@ if get_option('libmpv')
     pkg.generate(libmpv, version: client_api_version,
                  description: 'mpv media player client library')
 
-    headers = ['libmpv/client.h', 'libmpv/render.h',
-               'libmpv/render_gl.h', 'libmpv/stream_cb.h']
+    headers = ['include/mpv/client.h', 'include/mpv/render.h',
+               'include/mpv/render_gl.h', 'include/mpv/stream_cb.h']
     install_headers(headers, subdir: 'mpv')
 
     # Allow projects to build with libmpv by cloning into ./subprojects/mpv
-    libmpv_dep = declare_dependency(link_with: libmpv)
+    libmpv_dep = declare_dependency(include_directories: incdir_public, link_with: libmpv)
     meson.override_dependency('mpv', libmpv_dep)
 endif
 
@@ -1797,7 +1798,8 @@ if get_option('cplayer')
     confdir = get_option('sysconfdir')
 
     conf_files = ['etc/mpv.conf', 'etc/input.conf',
-                  'etc/mplayer-input.conf', 'etc/restore-old-bindings.conf']
+                  'etc/mplayer-input.conf', 'etc/restore-old-bindings.conf',
+                  'etc/restore-osc-bindings.conf']
     install_data(conf_files, install_dir: join_paths(datadir, 'doc', 'mpv'))
 
     bash_install_dir = join_paths(datadir, 'bash-completion', 'completions')
@@ -1805,6 +1807,9 @@ if get_option('cplayer')
 
     zsh_install_dir = join_paths(datadir, 'zsh', 'site-functions')
     install_data('etc/_mpv.zsh', install_dir: zsh_install_dir, rename: '_mpv')
+
+    fish_install_dir = join_paths(datadir, 'fish', 'vendor_completions.d')
+    install_data('etc/mpv.fish', install_dir: fish_install_dir, rename: 'mpv.fish')
 
     install_data('etc/mpv.metainfo.xml', install_dir: join_paths(datadir, 'metainfo'))
     install_data('etc/encoding-profiles.conf', install_dir: join_paths(confdir, 'mpv'))
@@ -1820,12 +1825,13 @@ if get_option('cplayer')
     install_data('etc/mpv-symbolic.svg', install_dir: join_paths(hicolor_dir, 'symbolic', 'apps'))
 
     mpv = executable('mpv', main_fn_source, objects: libmpv.extract_all_objects(recursive: true), dependencies: dependencies,
-                     win_subsystem: 'windows', install: true)
+                     win_subsystem: get_option('win32-subsystem'), install: true)
 
-    # Older meson versions generate this in the player subdirectory.
-    if win32 and meson.version().version_compare('>= 1.3.0')
+    if win32 and get_option('win32-subsystem') != 'console'
         wrapper_sources= 'osdep/win32-console-wrapper.c'
-        executable('mpv', wrapper_sources, c_args: '-municode', link_args: '-municode',
+        executable('mpv', wrapper_sources, c_args: ['-municode', '-fno-asynchronous-unwind-tables'],
+                   link_args: ['-municode', '-nostartfiles', '-nodefaultlibs'],
+                   override_options: ['b_sanitize=none'],
                    name_suffix: 'com', install: true)
     endif
 
@@ -1839,11 +1845,16 @@ if get_option('cplayer')
 
     if not win32 and not darwin
         if meson.can_run_host_binaries()
+            mpv_protocols = custom_target('mpv_protocols',
+                output: 'mpv_protocols',
+                command: [mpv, '--no-config','--list-protocols'],
+                capture: true,
+            )
             mpv_desktop_path = join_paths(source_root, 'etc', 'mpv.desktop')
             custom_target('mpv.desktop',
-                depends: mpv,
+                input: mpv_protocols,
                 output: 'mpv.desktop',
-                command: [mpv_desktop, mpv_desktop_path, mpv.full_path(), '@OUTPUT@'],
+                command: [mpv_desktop, mpv_desktop_path, '@INPUT@', '@OUTPUT@'],
                 install: true,
                 install_dir: join_paths(datadir, 'applications'),
             )

@@ -47,21 +47,22 @@ extension NSScreen {
     }
 }
 
-extension NSColor {
-    convenience init(hex: String) {
-        let int = Int(hex.dropFirst(), radix: 16) ?? 0
-        let alpha = CGFloat((int >> 24) & 0x000000FF)/255
-        let red   = CGFloat((int >> 16) & 0x000000FF)/255
-        let green = CGFloat((int >> 8)  & 0x000000FF)/255
-        let blue  = CGFloat((int)       & 0x000000FF)/255
-
-        self.init(calibratedRed: red, green: green, blue: blue, alpha: alpha)
-    }
+extension NSEvent.ModifierFlags {
+    public static let optionLeft: NSEvent.ModifierFlags = .init(rawValue: UInt(NX_DEVICELALTKEYMASK))
+    public static let optionRight: NSEvent.ModifierFlags = .init(rawValue: UInt(NX_DEVICERALTKEYMASK))
 }
 
-extension NSEvent.ModifierFlags {
-    public static var optionLeft: NSEvent.ModifierFlags = .init(rawValue: UInt(NX_DEVICELALTKEYMASK))
-    public static var optionRight: NSEvent.ModifierFlags = .init(rawValue: UInt(NX_DEVICERALTKEYMASK))
+extension String {
+    func isUrl() -> Bool {
+        guard let regex = try? NSRegularExpression(pattern: "^(https?|ftp)://[^\\s/$.?#].[^\\s]*$",
+                                                   options: .caseInsensitive) else {
+            return false
+        }
+        let isUrl = regex.numberOfMatches(in: self,
+                                     options: [],
+                                       range: NSRange(location: 0, length: self.count))
+        return isUrl > 0
+    }
 }
 
 extension mp_keymap {
@@ -73,7 +74,7 @@ extension mp_keymap {
 extension mpv_event_id: CustomStringConvertible {
     public var description: String {
         switch self {
-        case MPV_EVENT_NONE: return "MPV_EVENT_NONE2"
+        case MPV_EVENT_NONE: return "MPV_EVENT_NONE"
         case MPV_EVENT_SHUTDOWN: return "MPV_EVENT_SHUTDOWN"
         case MPV_EVENT_LOG_MESSAGE: return "MPV_EVENT_LOG_MESSAGE"
         case MPV_EVENT_GET_PROPERTY_REPLY: return "MPV_EVENT_GET_PROPERTY_REPLY"

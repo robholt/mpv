@@ -284,8 +284,8 @@ static void read_sub_bitmaps(struct sd *sd, struct sub *sub)
         sub->src_w = MPMAX(sub->src_w, b->x + b->w);
         sub->src_h = MPMAX(sub->src_h, b->y + b->h);
 
-        assert(r->nb_colors > 0);
-        assert(r->nb_colors <= 256);
+        mp_assert(r->nb_colors > 0);
+        mp_assert(r->nb_colors <= 256);
         uint32_t pal[256] = {0};
         memcpy(pal, data[1], r->nb_colors * 4);
         convert_pal(pal, 256, opts->sub_gray);
@@ -472,7 +472,24 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res d,
             video_par = par;
     }
     if (priv->avctx->codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE)
-        video_par = -1;
+    {
+        // For Blu-ray subs on SD video, try to match the video PAR.
+        if (priv->video_params.w == 720 &&
+            (priv->video_params.h == 480 ||
+             priv->video_params.h == 576))
+        {
+            double par = priv->video_params.p_w / (double)priv->video_params.p_h;
+            if (isnormal(par))
+                video_par = par * -1;
+            else
+                video_par = -1;
+        }
+        else
+        {
+            // Force letter-boxing on all other Blu-ray subtitles
+            video_par = -1;
+        }
+    }
     if (opts->stretch_image_subs)
         d.ml = d.mr = d.mt = d.mb = 0;
     int w = priv->avctx->width;
@@ -524,7 +541,7 @@ static struct sub_bitmaps *get_bitmaps(struct sd *sd, struct mp_osd_res d,
         res->change_id++;
 
     if (!res->change_id) {
-        assert(priv->prevret_num == res->num_parts);
+        mp_assert(priv->prevret_num == res->num_parts);
         for (int n = 0; n < priv->prevret_num; n++) {
             struct sub_bitmap *a = &res->parts[n];
             struct sub_bitmap *b = &priv->prevret[n];

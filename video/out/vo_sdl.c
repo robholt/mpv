@@ -453,7 +453,7 @@ static int reconfig(struct vo *vo, struct mp_image_params *params)
     struct mp_rect screenrc;
 
     update_screeninfo(vo, &screenrc);
-    vo_calc_window_geometry(vo, &screenrc, &geo);
+    vo_calc_window_geometry(vo, &screenrc, &screenrc, 1.0, false, &geo);
     vo_apply_window_geometry(vo, &geo);
 
     int win_w = vo->dwidth;
@@ -608,7 +608,7 @@ static void wait_events(struct vo *vo, int64_t until_time_ns)
             break;
         }
         case SDL_MOUSEMOTION:
-            mp_input_set_mouse_pos(vo->input_ctx, ev.motion.x, ev.motion.y);
+            mp_input_set_mouse_pos(vo->input_ctx, ev.motion.x, ev.motion.y, false);
             break;
         case SDL_MOUSEBUTTONDOWN: {
             int i;
@@ -879,7 +879,7 @@ static int query_format(struct vo *vo, int format)
     return 0;
 }
 
-static void draw_frame(struct vo *vo, struct vo_frame *frame)
+static bool draw_frame(struct vo *vo, struct vo_frame *frame)
 {
     struct priv *vc = vo->priv;
 
@@ -894,7 +894,7 @@ static void draw_frame(struct vo *vo, struct vo_frame *frame)
 
         mp_image_t texmpi;
         if (!lock_texture(vo, &texmpi))
-            return;
+            goto done;
 
         mp_image_copy(&texmpi, frame->current);
 
@@ -914,6 +914,9 @@ static void draw_frame(struct vo *vo, struct vo_frame *frame)
     SDL_RenderCopy(vc->renderer, vc->tex, &src, &dst);
 
     draw_osd(vo);
+
+done:
+    return VO_TRUE;
 }
 
 static struct mp_image *get_window_screenshot(struct vo *vo)
