@@ -94,7 +94,9 @@ const struct m_sub_options demux_lavf_conf = {
         {"demuxer-lavf-probescore", OPT_INT(probescore),
          M_RANGE(1, AVPROBE_SCORE_MAX)},
         {"demuxer-lavf-hacks", OPT_BOOL(hacks)},
+#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
         {"demuxer-lavf-o", OPT_KEYVALUELIST(avopts)},
+#endif
         {"sub-codepage", OPT_STRING(sub_cp)},
         {"rtsp-transport", OPT_CHOICE(rtsp_transport,
             {"lavf", 0},
@@ -203,9 +205,6 @@ static const struct format_hack format_hacks[] = {
 
     // Useless non-sense, sometimes breaks MLP2 subreader.c fallback
     BLACKLIST("tty"),
-    // Let's open files with extremely generic extensions (.bin) with a
-    // demuxer that doesn't have a probe function! NO.
-    BLACKLIST("bin"),
     // Useless, does not work with custom streams.
     BLACKLIST("image2"),
     {0}
@@ -911,6 +910,7 @@ static int block_io_open(struct AVFormatContext *s, AVIOContext **pb,
                          const char *url, int flags, AVDictionary **options)
 {
     struct demuxer *demuxer = s->opaque;
+    mp_require(demuxer);
     MP_ERR(demuxer, "Not opening '%s' due to --access-references=no.\n", url);
     return AVERROR(EACCES);
 }
@@ -919,6 +919,7 @@ static int nested_io_open(struct AVFormatContext *s, AVIOContext **pb,
                           const char *url, int flags, AVDictionary **options)
 {
     struct demuxer *demuxer = s->opaque;
+    mp_require(demuxer);
     lavf_priv_t *priv = demuxer->priv;
 
     if (options && priv->opts->propagate_opts) {
@@ -953,6 +954,7 @@ static int nested_io_open(struct AVFormatContext *s, AVIOContext **pb,
 static int nested_io_close2(struct AVFormatContext *s, AVIOContext *pb)
 {
     struct demuxer *demuxer = s->opaque;
+    mp_require(demuxer);
     lavf_priv_t *priv = demuxer->priv;
 
     for (int n = 0; n < priv->num_nested; n++) {
@@ -1214,11 +1216,12 @@ static bool demux_lavf_read_packet(struct demuxer *demux,
 {
     lavf_priv_t *priv = demux->priv;
 
-    AVPacket *pkt = &(AVPacket){0};
+    AVPacket *pkt = av_packet_alloc();
+    MP_HANDLE_OOM(pkt);
     int r = av_read_frame(priv->avfc, pkt);
     update_read_stats(demux);
     if (r < 0) {
-        av_packet_unref(pkt);
+        av_packet_free(&pkt);
         if (r == AVERROR_EOF)
             return false;
         MP_WARN(demux, "error reading packet: %s.\n", av_err2str(r));
@@ -1240,19 +1243,19 @@ static bool demux_lavf_read_packet(struct demuxer *demux,
     AVStream *st = priv->avfc->streams[pkt->stream_index];
 
     if (!demux_stream_is_selected(stream)) {
-        av_packet_unref(pkt);
+        av_packet_free(&pkt);
         return true; // don't signal EOF if skipping a packet
     }
 
     // Never send additional frames for streams that are a single frame.
     if (stream->image && priv->format_hack.first_frame_only && pkt->pos != 0) {
-        av_packet_unref(pkt);
+        av_packet_free(&pkt);
         return true;
     }
 
     struct demux_packet *dp = new_demux_packet_from_avpacket(demux->packet_pool, pkt);
     if (!dp) {
-        av_packet_unref(pkt);
+        av_packet_free(&pkt);
         return true;
     }
 
@@ -1264,7 +1267,8 @@ static bool demux_lavf_read_packet(struct demuxer *demux,
     dp->duration = pkt->duration * av_q2d(st->time_base);
     dp->pos = pkt->pos;
     dp->keyframe = pkt->flags & AV_PKT_FLAG_KEY;
-    av_packet_unref(pkt);
+    dp->is_wrapped_avframe = st->codecpar->codec_id == AV_CODEC_ID_WRAPPED_AVFRAME;
+    av_packet_free(&pkt);
 
     if (priv->format_hack.clear_filepos)
         dp->pos = -1;

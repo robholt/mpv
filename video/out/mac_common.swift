@@ -47,7 +47,7 @@ class MacCommon: Common {
             let previousActiveApp = getActiveApp()
             initApp()
 
-            let (_, wr, forcePosition) = getInitProperties(vo)
+            let (screen, wr, forcePosition) = getInitProperties(vo)
             guard let layer = self.layer else {
                 log.error("Something went wrong, no MetalLayer was initialized")
                 exit(1)
@@ -60,7 +60,7 @@ class MacCommon: Common {
             }
 
             if forcePosition {
-                window?.updateFrame(wr)
+                window?.updateFrame(wr, screen)
             } else if option.vo.auto_window_resize {
                 window?.updateSize(wr.size)
             }
@@ -110,7 +110,9 @@ class MacCommon: Common {
     }
 
     @objc func isVisible() -> Bool {
-        return window?.occlusionState.contains(.visible) ?? false
+        return window?.occlusionState.contains(.visible) ?? false ||
+               option.vo.force_render ||
+               needsInitialDraw
     }
 
     override func displayLinkCallback(_ displayLink: CVDisplayLink,
@@ -167,5 +169,9 @@ class MacCommon: Common {
     override func windowDidChangeBackingProperties() {
         layer?.contentsScale = window?.backingScaleFactor ?? 1
         windowDidResize()
+    }
+
+    override func windowDidChangeOcclusionState() {
+        flagEvents(VO_EVENT_EXPOSE)
     }
 }

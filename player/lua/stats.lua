@@ -38,9 +38,10 @@ local o = {
     debug = false,
 
     -- Graph options and style
-    plot_perfdata = true,
-    plot_vsync_ratio = true,
-    plot_vsync_jitter = true,
+    plot_perfdata = false,
+    plot_vsync_ratio = false,
+    plot_vsync_jitter = false,
+    plot_cache = true,
     plot_tonemapping_lut = false,
     skip_frames = 5,
     global_max = true,
@@ -130,6 +131,15 @@ end
 local cache_ahead_buf, cache_speed_buf
 local perf_buffers = {}
 local process_key_binding
+
+local property_cache = {}
+
+local function get_property_cached(name, def)
+    if property_cache[name] ~= nil then
+        return property_cache[name]
+    end
+    return def
+end
 
 local function graph_add_value(graph, value)
     graph.pos = (graph.pos % graph.len) + 1
@@ -288,9 +298,15 @@ end
 -- exclude: Optional table containing keys which are considered invalid values
 --          for this property. Specifying this will replace empty string as
 --          default invalid value (nil is always invalid).
-local function append_property(s, prop, attr, excluded)
+-- cached : If true, use get_property_cached instead of get_property_osd
+local function append_property(s, prop, attr, excluded, cached)
     excluded = excluded or {[""] = true}
-    local ret = mp.get_property_osd(prop)
+    local ret
+    if cached then
+        ret = get_property_cached(prop)
+    else
+        ret = mp.get_property_osd(prop)
+    end
     if not ret or excluded[ret] then
         if o.debug then
             print("No value for property: " .. prop)
@@ -794,30 +810,33 @@ local function append_hdr(s, hdr, video_out)
         return
     end
 
-    local function should_show(val)
-        return val and val ~= 203 and val > 0
+    local function has(val, target)
+        return val and math.abs(val - target) > 1e-4
     end
 
     -- If we are printing video out parameters it is just display, not mastering
     local display_prefix = video_out and "Display:" or "Mastering display:"
 
     local indent = ""
+    local has_dml = has(hdr["min-luma"], 0.203) or has(hdr["max-luma"], 203)
+    local has_cll = hdr["max-cll"] and hdr["max-cll"] > 0
+    local has_fall = hdr["max-fall"] and hdr["max-fall"] > 0
 
-    if should_show(hdr["max-cll"]) or should_show(hdr["max-luma"]) then
-        append(s, "", {prefix="HDR10:"})
-        if hdr["min-luma"] and should_show(hdr["max-luma"]) then
+    if has_dml or has_cll or has_fall then
+        append(s, "", {prefix=video_out and "" or "HDR10:", prefix_sep=video_out and "" or nil})
+        if has_dml then
             -- libplacebo uses close to zero values as "defined zero"
             hdr["min-luma"] = hdr["min-luma"] <= 1e-6 and 0 or hdr["min-luma"]
             append(s, format("%.2g / %.0f", hdr["min-luma"], hdr["max-luma"]),
                 {prefix=display_prefix, suffix=" cd/m²", nl="", indent=indent})
             indent = o.prefix_sep .. o.prefix_sep
         end
-        if should_show(hdr["max-cll"]) then
-            append(s, hdr["max-cll"], {prefix="MaxCLL:", suffix=" cd/m²", nl="",
-                                       indent=indent})
+        if has_cll then
+            append(s, string.format("%.0f", hdr["max-cll"]), {prefix="MaxCLL:",
+                                    suffix=" cd/m²", nl="", indent=indent})
             indent = o.prefix_sep .. o.prefix_sep
         end
-        if hdr["max-fall"] and hdr["max-fall"] > 0 then
+        if has_fall then
             append(s, hdr["max-fall"], {prefix="MaxFALL:", suffix=" cd/m²", nl="",
                                         indent=indent})
         end
@@ -872,7 +891,21 @@ local function append_img_params(s, r, ro)
 
     -- Group these together to save vertical space
     append(s, r["colormatrix"], {prefix="Colormatrix:"})
-    append(s, r["primaries"], {prefix="Primaries:", nl="", indent=indent})
+    if r["prim-red-x"] or r["prim-red-y"] or
+       r["prim-green-x"] or r["prim-green-y"] or
+       r["prim-blue-x"] or r["prim-blue-y"] or
+       r["prim-white-x"] or r["prim-white-y"] then
+        append(s, string.format("[%.3f %.3f, %.3f %.3f, %.3f %.3f, %.3f %.3f]",
+                                r["prim-red-x"] or 0, r["prim-red-y"] or 0,
+                                r["prim-green-x"] or 0, r["prim-green-y"] or 0,
+                                r["prim-blue-x"] or 0, r["prim-blue-y"] or 0,
+                                r["prim-white-x"] or 0, r["prim-white-y"] or 0),
+            {prefix="Primaries:", nl="", indent=indent})
+        append(s, r["primaries"], {prefix="in", nl="", indent=" ", prefix_sep=" ",
+                                   no_prefix_markup=true})
+    else
+        append(s, r["primaries"], {prefix="Primaries:", nl="", indent=indent})
+    end
     append(s, r["gamma"], {prefix="Transfer:", nl="", indent=indent})
 end
 
@@ -909,8 +942,9 @@ local function add_video_out(s)
 
     append(s, "", {prefix="Display:", nl=o.nl .. o.nl, indent=""})
     append(s, vo, {prefix_sep="", nl="", indent=""})
+
     append_property(s, "display-names", {prefix_sep="", prefix="(", suffix=")",
-                                         no_prefix_markup=true, nl="", indent=" "})
+                    no_prefix_markup=true, nl="", indent=" "}, nil, true)
     append(s, mp.get_property_native("current-gpu-context"),
            {prefix="Context:", nl="", indent=o.prefix_sep .. o.prefix_sep})
     append_property(s, "avsync", {prefix="A-V:"})
@@ -928,7 +962,7 @@ local function add_video_out(s)
 
     local scale = nil
     if not mp.get_property_native("fullscreen") then
-        scale = mp.get_property_native("current-window-scale")
+        scale = get_property_cached("current-window-scale")
     end
 
     local od = mp.get_property_native("osd-dimensions")
@@ -966,9 +1000,9 @@ local function add_video(s)
     end
 
     local track = mp.get_property_native("current-tracks/video")
-    if track then
-        append(s, "", {prefix=track.image and "Image:" or "Video:", nl=o.nl .. o.nl, indent=""})
-        append(s, track["codec-desc"], {prefix_sep="", nl="", indent=""})
+    local track_type = (track and track.image) and "Image:" or "Video:"
+    append(s, "", {prefix=track_type, nl=o.nl .. o.nl, indent=""})
+    if track and append(s, track["codec-desc"], {prefix_sep="", nl="", indent=""}) then
         append(s, track["codec-profile"], {prefix="[", nl="", indent=" ", prefix_sep="",
                no_prefix_markup=true, suffix="]"})
         if track["codec"] ~= track["decoder"] then
@@ -977,7 +1011,7 @@ local function add_video(s)
         end
         append_property(s, "hwdec-current", {prefix="HW:", nl="",
                         indent=o.prefix_sep .. o.prefix_sep,
-                        no_prefix_markup=false, suffix=""}, {no=true, [""]=true})
+                        no_prefix_markup=false, suffix=""}, {no=true, [""]=true}, true)
     end
     local has_prefix = false
     if o.show_frame_info then
@@ -1341,7 +1375,7 @@ local function cache_stats()
     end
 
     local r_graph = nil
-    if not display_timer.oneshot and o.use_ass then
+    if not display_timer.oneshot and o.use_ass and o.plot_cache then
         r_graph = generate_graph(cache_ahead_buf, cache_ahead_buf.pos,
                                  cache_ahead_buf.len, cache_ahead_buf.max,
                                  nil, 0.8, 1)
@@ -1366,7 +1400,7 @@ local function cache_stats()
 
     local speed = info["raw-input-rate"] or 0
     local speed_graph = nil
-    if not display_timer.oneshot and o.use_ass then
+    if not display_timer.oneshot and o.use_ass and o.plot_cache then
         speed_graph = generate_graph(cache_speed_buf, cache_speed_buf.pos,
                                      cache_speed_buf.len, cache_speed_buf.max,
                                      nil, 0.8, 1)
@@ -1770,3 +1804,11 @@ end
 
 mp.observe_property("osd-height", "native", update_scale)
 mp.observe_property("osd-scale-by-window", "native", update_scale)
+
+local function update_property_cache(name, value)
+    property_cache[name] = value
+end
+
+mp.observe_property('current-window-scale', 'native', update_property_cache)
+mp.observe_property('display-names', 'string', update_property_cache)
+mp.observe_property('hwdec-current', 'string', update_property_cache)

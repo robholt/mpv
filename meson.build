@@ -279,6 +279,7 @@ test_flags = ['-Wdisabled-optimization',
               '-Wempty-body',
               '-Wformat',
               '-Wimplicit-fallthrough',
+              '-Woverflow',
               '-Wparentheses',
               '-Wpointer-arith',
               '-Wshadow',
@@ -324,9 +325,6 @@ mswin_flags = ['-D_WIN32_WINNT=0x0A00', '-DWINVER=0x0A00', '-DUNICODE',
                '-D_USE_MATH_DEFINES', '-DWIN32_LEAN_AND_MEAN',
                '-D_CRT_DECLARE_NONSTDC_NAMES', '-D_CRT_NONSTDC_NO_WARNINGS',
                '-D_CRT_SECURE_NO_WARNINGS', '-DWINRT_NO_SOURCE_LOCATION']
-
-# https://developercommunity.visualstudio.com/t/NAN-is-no-longer-compile-time-constant-i/10688907
-mswin_flags += '-D_UCRT_NOISY_NAN'
 
 if host_machine.system() == 'windows'
     flags += [mswin_flags]
@@ -405,13 +403,18 @@ add_project_link_arguments(link_flags, language: ['c', 'cpp', 'objc'])
 
 
 # osdep
+if darwin
+    path_source = files('osdep/path-darwin.c')
+    timer_source = files('osdep/timer-darwin.c')
+endif
+
 cocoa = dependency('appleframeworks', modules: ['Cocoa', 'IOKit', 'QuartzCore'],
                    required: get_option('cocoa'))
 features += {'cocoa': cocoa.found()}
 if features['cocoa']
     dependencies += cocoa
+    path_source += files('osdep/path-mac.m')
     sources += files('osdep/language-mac.c',
-                     'osdep/path-mac.m',
                      'osdep/utils-mac.c',
                      'osdep/mac/app_bridge.m',
                      'player/clipboard/clipboard-mac.m')
@@ -419,7 +422,6 @@ if features['cocoa']
 endif
 
 if posix
-    path_source = files('osdep/path-unix.c')
     if not get_option('fuzzers') and cc.has_function('fork', prefix : '#include <unistd.h>')
         sources += files('osdep/subprocess-posix.c')
     else
@@ -436,13 +438,15 @@ if posix and not features['cocoa']
     main_fn_source = files('osdep/main-fn-unix.c')
 endif
 
-if darwin
-    path_source = files('osdep/path-darwin.c')
-    timer_source = files('osdep/timer-darwin.c')
+if posix and not darwin
+    path_source = files('osdep/path-unix.c')
+    timer_source = files('osdep/timer-linux.c')
 endif
 
-if posix and not darwin
-    timer_source = files('osdep/timer-linux.c')
+if host_machine.system() == 'linux'
+    sources += files('osdep/als-linux.c')
+else
+    sources += files('osdep/als-voctrl.c')
 endif
 
 features += {'ppoll': cc.has_function('ppoll', args: '-D_GNU_SOURCE',
@@ -467,8 +471,7 @@ endif
 features += {'android': host_machine.system() == 'android'}
 if features['android']
     dependencies += cc.find_library('android')
-    sources += files('audio/out/ao_audiotrack.c',
-                     'misc/jni.c',
+    sources += files('misc/jni.c',
                      'osdep/android/strnlen.c',
                      'video/out/android_common.c',
                      'video/out/vo_mediacodec_embed.c')
@@ -517,6 +520,7 @@ if features['win32-desktop']
                      'player/clipboard/clipboard-win.c',
                      'osdep/language-win.c',
                      'osdep/terminal-win.c',
+                     'osdep/w32_register.c',
                      'video/out/w32_common.c',
                      'video/out/win32/displayconfig.c',
                      'video/out/win32/droptarget.c',
@@ -643,6 +647,7 @@ iconv = dependency('iconv', required: get_option('iconv'))
 features += {'iconv': iconv.found()}
 if features['iconv']
     dependencies += iconv
+    add_project_arguments('-DWINICONV_CONST=', language: ['c', 'objc'])
 endif
 
 javascript = dependency('mujs', version: '>= 1.0.0', required: get_option('javascript'))
@@ -673,7 +678,7 @@ if features['libavdevice']
     dependencies += libavdevice
 endif
 
-libbluray = dependency('libbluray', version: '>= 0.3.0', required: get_option('libbluray'))
+libbluray = dependency('libbluray', version: '>= 0.5.0', required: get_option('libbluray'))
 features += {'libbluray': libbluray.found()}
 if features['libbluray']
     dependencies += libbluray
@@ -734,19 +739,16 @@ if features['rubberband']
     sources += files('audio/filter/af_rubberband.c')
 endif
 
-sdl2 = dependency('sdl2', required: get_option('sdl2'))
-features += {'sdl2': sdl2.found()}
-if features['sdl2']
-    dependencies += sdl2
-endif
+sdl2 = dependency('sdl2', required: false)
 
 sdl2_gamepad = get_option('sdl2-gamepad').require(
-    features['sdl2'],
+    sdl2.found(),
     error_message: 'sdl2 was not found!',
 )
 features += {'sdl2-gamepad': sdl2_gamepad.allowed()}
 if features['sdl2-gamepad']
     sources += files('input/sdl_gamepad.c')
+    dependencies += sdl2
 endif
 
 libinput = dependency('libinput', required: get_option('libinput'))
@@ -775,6 +777,14 @@ features += {'vapoursynth': vapoursynth.found() and vapoursynth_script.found()}
 if features['vapoursynth']
     dependencies += [vapoursynth, vapoursynth_script]
     sources += files('video/filter/vf_vapoursynth.c')
+endif
+
+xfixes = dependency('xfixes', version: '>= 1.0.0', required: get_option('x11-clipboard'))
+libx11 = dependency('x11', version: '>= 1.0.0', required: get_option('x11-clipboard'))
+features += {'x11-clipboard': xfixes.found() and libx11.found()}
+if features['x11-clipboard']
+    dependencies += [xfixes, libx11]
+    sources += files('player/clipboard/clipboard-x11.c')
 endif
 
 zimg = dependency('zimg', version: '>= 2.9', required: get_option('zimg'))
@@ -859,6 +869,19 @@ if features['openal']
     sources += files('audio/out/ao_openal.c')
 endif
 
+features += {'audiotrack':
+    get_option('audiotrack').require(features['android']).allowed()}
+if features['audiotrack']
+    sources += files('audio/out/ao_audiotrack.c')
+endif
+
+aaudio_opt = get_option('aaudio').require(features['android'])
+features += {'aaudio': cc.has_header_symbol('aaudio/AAudio.h',
+                                            'AAudioStream', required: aaudio_opt)}
+if features['aaudio']
+    sources += files('audio/out/ao_aaudio.c')
+endif
+
 opensles = cc.find_library('OpenSLES', required: get_option('opensles'))
 features += {'opensles': opensles.found()}
 if features['opensles']
@@ -891,12 +914,13 @@ if features['pulse']
 endif
 
 sdl2_audio = get_option('sdl2-audio').require(
-    features['sdl2'],
+    sdl2.found(),
     error_message: 'sdl2 was not found!',
 )
 features += {'sdl2-audio': sdl2_audio.allowed()}
 if features['sdl2-audio']
     sources += files('audio/out/ao_sdl.c')
+    dependencies += sdl2
 endif
 
 sndio = dependency('sndio', required: get_option('sndio'))
@@ -971,12 +995,13 @@ if features['jpeg']
 endif
 
 sdl2_video = get_option('sdl2-video').require(
-    features['sdl2'],
+    sdl2.found(),
     error_message: 'sdl2 was not found!',
 )
 features += {'sdl2-video': sdl2_video.allowed()}
 if features['sdl2-video']
     sources += files('video/out/vo_sdl.c')
+    dependencies += sdl2
 endif
 
 shaderc = dependency('shaderc', required:
@@ -1014,7 +1039,6 @@ features += {'d3d11': d3d11.allowed()}
 if features['d3d11']
     sources += files('video/out/d3d11/context.c',
                      'video/out/d3d11/ra_d3d11.c')
-    features += {'dxgi-debug-d3d11': cc.has_header_symbol('d3d11sdklayers.h', 'DXGI_DEBUG_D3D11')}
 endif
 
 wayland = {
@@ -1040,12 +1064,7 @@ if features['wayland']
     subdir(join_paths('video', 'out'))
 endif
 
-foreach v: ['1.39']
-    features += {'wayland-protocols-' + v.replace('.', '-'):
-        wayland['deps'][2].version().version_compare('>=' + v)}
-endforeach
-
-if features['wayland-protocols-1-39']
+if features['wayland'] and features['wayland-protocols-1-39']
     sources += files('player/clipboard/clipboard-wayland.c')
 endif
 
@@ -1059,8 +1078,8 @@ if features['wayland'] and features['memfd-create']
 endif
 
 dmabuf_wayland = get_option('dmabuf-wayland').require(
-    features['drm'] and features['memfd-create'] and features['wayland'],
-    error_message: 'drm, memfd-create or wayland was not found!',
+    features['memfd-create'] and features['wayland'],
+    error_message: 'memfd-create or wayland was not found!',
 )
 features += {'dmabuf-wayland': dmabuf_wayland.allowed()}
 if features['dmabuf-wayland']
@@ -1207,10 +1226,6 @@ if features['egl-angle-win32']
     sources += files('video/out/opengl/context_angle.c')
 endif
 
-if features['d3d11'] or features['egl-angle-win32']
-    sources += files('video/out/gpu/d3d11_helpers.c')
-endif
-
 egl = dependency('egl', version: '>= 1.4.0', required: get_option('egl'))
 features += {'egl': egl.found() and gl_allowed}
 if features['egl']
@@ -1335,6 +1350,10 @@ if features['vulkan'] or (features['gl'] and features['egl'])
     sources += files('video/filter/vf_gpu.c')
 endif
 
+if features['d3d11'] or features['egl-angle-win32'] or (features['vulkan'] and win32)
+    sources += files('video/out/gpu/d3d11_helpers.c')
+    features += {'dxgi-debug-d3d11': cc.has_header_symbol('d3d11sdklayers.h', 'DXGI_DEBUG_D3D11')}
+endif
 
 # hwaccel
 ffnvcodec = dependency('ffnvcodec', version: '>= 11.1.5.1', required: false)
@@ -1464,8 +1483,9 @@ if features['vaapi']
                      'video/out/hwdec/dmabuf_interop_pl.c')
 endif
 
-features += {'dmabuf-interop-gl': features['egl'] and features['drm']}
+features += {'dmabuf-interop-gl': features['egl'] and drm.found()}
 if features['dmabuf-interop-gl']
+    dependencies += drm.partial_dependency(includes: true, compile_args: true)
     sources += files('video/out/hwdec/dmabuf_interop_gl.c')
 endif
 
@@ -1538,7 +1558,11 @@ if macos_sdk_version != '0.0'
     add_project_link_arguments(objc_link_flags, language: ['c', 'objc'])
 endif
 
-xcrun = find_program('xcrun', required: get_option('swift-build').require(darwin))
+swift = get_option('swift-build').require(
+    darwin and features['cocoa'],
+    error_message: 'cocoa was not found',
+)
+xcrun = find_program('xcrun', required: swift)
 swift_ver = '0.0'
 if xcrun.found()
     swift_prog = find_program(run_command(xcrun, '-find', 'swiftc', check: true).stdout().strip())
@@ -1556,7 +1580,7 @@ sys.stdout.write(swift_ver)
 endif
 
 swift = get_option('swift-build').require(
-    darwin and macos_sdk_version.version_compare('>= 10.15') and swift_ver.version_compare('>= 4.1'),
+    swift.allowed() and macos_sdk_version.version_compare('>= 10.15') and swift_ver.version_compare('>= 4.1'),
     error_message: 'A suitable macos sdk version or swift version could not be found!',
 )
 features += {'swift': swift.allowed()}
@@ -1753,11 +1777,7 @@ if win32
     # Hence, these includes are needed.
     res_includes = [source_root, build_root]
 
-    resources = ['etc/mpv-icon-8bit-16x16.png',
-                 'etc/mpv-icon-8bit-32x32.png',
-                 'etc/mpv-icon-8bit-64x64.png',
-                 'etc/mpv-icon-8bit-128x128.png',
-                 'etc/mpv-icon.ico',
+    resources = ['etc/mpv-icon.ico',
                  'osdep/mpv.exe.manifest']
 
     sources += windows.compile_resources('osdep/mpv.rc', args: res_flags, depend_files: resources,
@@ -1795,9 +1815,8 @@ endif
 
 if get_option('cplayer')
     datadir = get_option('datadir')
-    confdir = get_option('sysconfdir')
 
-    conf_files = ['etc/mpv.conf', 'etc/input.conf',
+    conf_files = ['etc/mpv.conf', 'etc/encoding-profiles.conf', 'etc/input.conf',
                   'etc/mplayer-input.conf', 'etc/restore-old-bindings.conf',
                   'etc/restore-osc-bindings.conf']
     install_data(conf_files, install_dir: join_paths(datadir, 'doc', 'mpv'))
@@ -1812,7 +1831,6 @@ if get_option('cplayer')
     install_data('etc/mpv.fish', install_dir: fish_install_dir, rename: 'mpv.fish')
 
     install_data('etc/mpv.metainfo.xml', install_dir: join_paths(datadir, 'metainfo'))
-    install_data('etc/encoding-profiles.conf', install_dir: join_paths(confdir, 'mpv'))
 
     foreach size: ['16x16', '32x32', '64x64', '128x128']
         icon_dir = join_paths(datadir, 'icons', 'hicolor', size, 'apps')
@@ -1827,19 +1845,24 @@ if get_option('cplayer')
     mpv = executable('mpv', main_fn_source, objects: libmpv.extract_all_objects(recursive: true), dependencies: dependencies,
                      win_subsystem: get_option('win32-subsystem'), install: true)
 
-    if win32 and get_option('win32-subsystem') != 'console'
-        wrapper_sources= 'osdep/win32-console-wrapper.c'
-        executable('mpv', wrapper_sources, c_args: ['-municode', '-fno-asynchronous-unwind-tables'],
-                   link_args: ['-municode', '-nostartfiles', '-nodefaultlibs'],
-                   override_options: ['b_sanitize=none'],
-                   name_suffix: 'com', install: true)
+    if win32
+        if get_option('win32-subsystem') != 'console'
+            wrapper_sources = 'osdep/win32-console-wrapper.c'
+            executable('mpv', wrapper_sources, c_args: ['-municode', '-fno-asynchronous-unwind-tables', '-fno-stack-protector'],
+                       link_args: ['-municode', '-nostartfiles', '-nodefaultlibs'],
+                       override_options: ['b_sanitize=none'],
+                       name_suffix: 'com', install: true)
+        endif
+        install_data(['etc/mpv-register.bat', 'etc/mpv-unregister.bat'],
+                     install_dir: get_option('bindir'))
     endif
 
     if darwin
         osxbundle = find_program(join_paths(tools_directory, 'osxbundle.py'), required: true)
         custom_target('macos-bundle',
             output: 'mpv.app',
-            command: [osxbundle, mpv.full_path(), '@SOURCE_ROOT@'],
+            depends: version_h,
+            command: [osxbundle, mpv, '@SOURCE_ROOT@', '-c', get_option('macos-bundle-category')],
         )
     endif
 
@@ -1872,7 +1895,13 @@ if get_option('fuzzers')
     subdir('fuzzers')
 endif
 
-summary({'d3d11': features['d3d11'],
+if features['sdl2-audio'] or features['sdl2-gamepad'] or features['sdl2-video']
+    warning('You are building with optional SDL2 support. If you encounter build issues, try disabling it.')
+endif
+
+summary({'cocoa': features['cocoa'] and features['swift'],
+         'd3d11': features['d3d11'],
+         'drm': features['drm'],
          'javascript': features['javascript'],
          'libmpv': get_option('libmpv'),
          'lua': features['lua'],

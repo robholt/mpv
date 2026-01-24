@@ -7,7 +7,6 @@ mpv provides the built-in module ``mp``, which contains functions to send
 commands to the mpv core and to retrieve information about playback state, user
 settings, file information, and so on.
 
-These scripts can be used to control mpv in a similar way to slave mode.
 Technically, the Lua code uses the client API internally.
 
 Example
@@ -175,7 +174,7 @@ The ``mp`` module is preloaded, although it can be loaded manually with
     as possible), and upon completion, fn is called. fn has three arguments:
     ``fn(success, result, error)``:
 
-         ``success``
+        ``success``
             Always a Boolean and is true if the command was successful,
             otherwise false.
 
@@ -446,7 +445,7 @@ The ``mp`` module is preloaded, although it can be loaded manually with
     the property will be passed as second argument to ``fn``, using
     ``mp.get_property_<type>`` to retrieve it. This means if ``type`` is for
     example ``string``, ``fn`` is roughly called as in
-    ``fn(name, mp.get_property_string(name))``.
+    ``fn(name, mp.get_property(name))``.
 
     If possible, change events are coalesced. If a property is changed a bunch
     of times in a row, only the last change triggers the change function. (The
@@ -491,6 +490,7 @@ The ``mp`` module is preloaded, although it can be loaded manually with
     the timer is re-added after the function fn is run.
 
     Returns a timer object. The timer object provides the following methods:
+
         ``stop()``
             Disable the timer. Does nothing if the timer is already disabled.
             This will remember the current elapsed time when stopping, so that

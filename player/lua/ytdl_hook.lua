@@ -82,9 +82,11 @@ local codec_map = {
     ["vtt"]         = "webvtt",
     ["opus"]        = "opus",
     ["vp9"]         = "vp9",
+    ["vp9%..*"]     = "vp9",
     ["avc1%..*"]    = "h264",
     ["av01%..*"]    = "av1",
     ["mp4a%..*"]    = "aac",
+    ["hev1%..*"]    = "hevc",
 }
 
 -- Codec name as reported by youtube-dl mapped to mpv internal codec names.
@@ -246,35 +248,6 @@ local function url_is_safe(url)
         msg.error(("Ignoring potentially unsafe url: '%s'"):format(url))
     end
     return safe
-end
-
-local function time_to_secs(time_string)
-    local ret
-
-    local a, b, c = time_string:match("(%d+):(%d%d?):(%d%d)")
-    if a ~= nil then
-        ret = (a*3600 + b*60 + c)
-    else
-        a, b = time_string:match("(%d%d?):(%d%d)")
-        if a ~= nil then
-            ret = (a*60 + b)
-        end
-    end
-
-    return ret
-end
-
-local function extract_chapters(data, video_length)
-    local ret = {}
-
-    for line in data:gmatch("[^\r\n]+") do
-        local time = time_to_secs(line)
-        if time and (time < video_length) then
-            table.insert(ret, {time = time, title = line})
-        end
-    end
-    table.sort(ret, function(a, b) return a.time < b.time end)
-    return ret
 end
 
 local function is_whitelisted(url)
@@ -827,8 +800,6 @@ local function add_single_video(json)
             end
             table.insert(chapter_list, {time=chapter.start_time, title=title})
         end
-    elseif json.description ~= nil and json.duration ~= nil then
-        chapter_list = extract_chapters(json.description, json.duration)
     end
 
     -- set start time
@@ -890,26 +861,6 @@ local function add_single_video(json)
     mp.set_property_native("file-local-options/stream-lavf-o", stream_opts)
 end
 
-local function check_version(ytdl_path)
-    local command = {
-        name = "subprocess",
-        capture_stdout = true,
-        args = {ytdl_path, "--version"}
-    }
-    local version_string = mp.command_native(command).stdout
-    local year, month, day = string.match(version_string, "(%d+).(%d+).(%d+)")
-
-    -- sanity check
-    if tonumber(year) < 2000 or tonumber(month) > 12 or
-        tonumber(day) > 31 then
-        return
-    end
-    local version_ts = os.time{year=year, month=month, day=day}
-    if os.difftime(os.time(), version_ts) > 60*60*24*90 then
-        msg.warn("It appears that your youtube-dl version is severely out of date.")
-    end
-end
-
 local function run_ytdl_hook(url)
     local start_time = os.clock()
 
@@ -936,11 +887,7 @@ local function run_ytdl_hook(url)
         msg.verbose("Video disabled. Only using audio")
     end
 
-    if format == "" then
-        format = "bestvideo+bestaudio/best"
-    end
-
-    if format ~= "ytdl" then
+    if format ~= "" and format ~= "ytdl" then
         table.insert(command, "--format")
         table.insert(command, format)
     end
@@ -1048,9 +995,6 @@ local function run_ytdl_hook(url)
             err = err .. "unexpected error occurred"
         end
         msg.error(err)
-        if parse_err or string.find(ytdl_err, "yt%-dl%.org/bug") then
-            check_version(ytdl.path)
-        end
         return
     end
 
@@ -1165,7 +1109,9 @@ local function run_ytdl_hook(url)
                 local playlist_url = nil
 
                 -- links without protocol as returned by --flat-playlist
-                if not site:find("://") then
+                if not site then
+                    msg.error("Playlist entry does not have unique URL, can't add it.")
+                elseif not site:find("://") then
                     -- youtube extractor provides only IDs,
                     -- others come prefixed with the extractor name and ":"
                     local prefix = site:find(":") and "ytdl://" or

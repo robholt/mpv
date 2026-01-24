@@ -54,12 +54,9 @@ shaderc_proj = cmake.subproject('shaderc_cmake', options: opts)
 shaderc_dep = declare_dependency(dependencies: [
     shaderc_proj.dependency('shaderc'),
     shaderc_proj.dependency('shaderc_util'),
-    shaderc_proj.dependency('SPIRV'),
     shaderc_proj.dependency('SPIRV-Tools-static'),
     shaderc_proj.dependency('SPIRV-Tools-opt'),
     shaderc_proj.dependency('glslang'),
-    shaderc_proj.dependency('GenericCodeGen'),
-    shaderc_proj.dependency('MachineIndependent'),
 ])
 meson.override_dependency('shaderc', shaderc_dep)
 "@
@@ -123,25 +120,48 @@ opts = cmake.subproject_options()
 opts.add_cmake_defines({
     'CMAKE_MSVC_RUNTIME_LIBRARY': 'MultiThreaded',
     'BUILD_SHARED_LIBS': 'OFF',
+    'BUILD_TESTING': 'OFF',
 })
 libjxl_proj = cmake.subproject('libjxl-cmake', options: opts)
-libjxl_dep = libjxl_proj.dependency('jxl')
+libjxl_dep = declare_dependency(dependencies: [
+    libjxl_proj.dependency('jxl'),
+    libjxl_proj.dependency('jxl_base'),
+    libjxl_proj.dependency('jxl_cms'),
+    libjxl_proj.dependency('hwy'),
+    libjxl_proj.dependency('brotlicommon'),
+    libjxl_proj.dependency('brotlidec'),
+    libjxl_proj.dependency('brotlienc'),
+])
 meson.override_dependency('libjxl', libjxl_dep)
+libjxl_threads_dep = libjxl_proj.dependency('jxl_threads')
+meson.override_dependency('libjxl_threads', libjxl_threads_dep)
+"@
+
+if (-not (Test-Path "$subprojects/aom")) {
+    New-Item -Path "$subprojects/aom" -ItemType Directory | Out-Null
+}
+Set-Content -Path "$subprojects/aom/meson.build" -Value @"
+project('aom', 'cpp', version: '3.13.1')
+cmake = import('cmake')
+opts = cmake.subproject_options()
+opts.add_cmake_defines({
+    'CMAKE_MSVC_RUNTIME_LIBRARY': 'MultiThreaded',
+    'BUILD_SHARED_LIBS': 'OFF',
+    'BUILD_TESTING': 'OFF',
+})
+aom_proj = cmake.subproject('aom-cmake', options: opts)
+aom_dep = aom_proj.dependency('aom')
+meson.override_dependency('aom', aom_dep)
 "@
 
 $projects = @(
     @{
         Path = "$subprojects/ffmpeg.wrap"
         URL = "https://gitlab.freedesktop.org/gstreamer/meson-ports/ffmpeg.git"
-        Revision = "meson-7.1"
+        Revision = "meson-8.0"
         Provides = @(
-            "libavcodec = libavcodec_dep",
-            "libavdevice = libavdevice_dep",
-            "libavfilter = libavfilter_dep",
-            "libavformat = libavformat_dep",
-            "libavutil = libavutil_dep",
-            "libswresample = libswresample_dep",
-            "libswscale = libswscale_dep"
+            "dependency_names = libavcodec, libavdevice, libavfilter, libavformat, libavutil, libswresample, libswscale"
+            "program_names = ffmpeg"
         )
     },
     @{
@@ -178,6 +198,11 @@ $projects = @(
         Path = "$subprojects/libjxl-cmake.wrap"
         URL = "https://github.com/libjxl/libjxl"
         Revision = "main"
+    },
+    @{
+        Path = "$subprojects/aom-cmake.wrap"
+        URL = "https://aomedia.googlesource.com/aom"
+        Revision = "main"
     }
 )
 
@@ -207,21 +232,23 @@ meson setup build `
     -Dgpl=true `
     -Dffmpeg:gpl=enabled `
     -Dffmpeg:tests=enabled `
-    -Dffmpeg:programs=disabled `
+    -Dffmpeg:programs=enabled `
     -Dffmpeg:sdl2=disabled `
     -Dffmpeg:vulkan=auto `
     -Dffmpeg:libdav1d=enabled `
     -Dffmpeg:libjxl=enabled `
+    -Dffmpeg:libaom=enabled `
     -Dlcms2:fastfloat=true `
     -Dlcms2:jpeg=disabled `
     -Dlcms2:tiff=disabled `
     -Dlibass:test=enabled `
+    -Dlibjpeg-turbo:tests=disabled `
     -Dlibusb:tests=false `
     -Dlibusb:examples=false `
     -Dlibplacebo:demos=false `
     -Dlibplacebo:lcms=enabled `
     -Dlibplacebo:shaderc=enabled `
-    -Dlibplacebo:tests=true `
+    -Dlibplacebo:tests=false `
     -Dlibplacebo:vulkan=enabled `
     -Dlibplacebo:d3d11=enabled `
     -Dxxhash:inline-all=true `
@@ -239,4 +266,5 @@ meson setup build `
     -Dx11=disabled
 ninja -C build mpv.exe mpv.com libmpv.a
 cp ./build/subprojects/vulkan-loader/vulkan.dll ./build/vulkan-1.dll
+cp ./etc/mpv-*.bat ./build
 ./build/mpv.com -v --no-config

@@ -568,7 +568,7 @@ static bool find_formats(struct ao *ao)
     struct wasapi_sample_fmt alt_formats[MP_ARRAY_SIZE(wasapi_formats)];
     wasapi_get_best_sample_formats(ao->format, alt_formats);
     struct wasapi_sample_fmt wasapi_format =
-        {AF_FORMAT_S16, 16, 16, &KSDATAFORMAT_SUBTYPE_PCM};;
+        {AF_FORMAT_S16, 16, 16, &KSDATAFORMAT_SUBTYPE_PCM};
     if (alt_formats[0].mp_format)
         wasapi_format = alt_formats[0];
 
@@ -643,7 +643,6 @@ exit_label:
     SAFE_RELEASE(state->pSessionControl);
     MP_WARN(state, "Error setting audio session name: %s\n",
             mp_HRESULT_to_str(hr));
-    return;
 }
 
 static void init_volume_control(struct wasapi_state *state)

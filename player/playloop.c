@@ -108,16 +108,17 @@ void mp_core_unlock(struct MPContext *mpctx)
 // Process any queued user input.
 static void mp_process_input(struct MPContext *mpctx)
 {
-    int processed = 0;
+    bool notify = false;
     for (;;) {
         mp_cmd_t *cmd = mp_input_read_cmd(mpctx->input);
         if (!cmd)
             break;
+        if (cmd->notify_event)
+            notify = true;
         run_command(mpctx, cmd, NULL, NULL, NULL);
-        processed = 1;
     }
     mp_set_timeout(mpctx, mp_input_get_delay(mpctx->input));
-    if (processed)
+    if (notify)
         mp_notify(mpctx, MP_EVENT_INPUT_PROCESSED, NULL);
 }
 
@@ -1062,7 +1063,9 @@ int handle_force_window(struct MPContext *mpctx, bool force)
         int config_format = 0;
         uint8_t fmts[IMGFMT_END - IMGFMT_START] = {0};
         vo_query_formats(vo, fmts);
-        for (int fmt = IMGFMT_START; fmt < IMGFMT_END; fmt++) {
+        if (fmts[IMGFMT_RGBA - IMGFMT_START])
+            config_format = IMGFMT_RGBA;
+        for (int fmt = IMGFMT_START; fmt < IMGFMT_END && !config_format; fmt++) {
             if (fmts[fmt - IMGFMT_START]) {
                 config_format = fmt;
                 break;
@@ -1079,10 +1082,13 @@ int handle_force_window(struct MPContext *mpctx, bool force)
             .w = w,   .h = h,
             .p_w = 1, .p_h = 1,
             .force_window = true,
+            .color = pl_color_space_srgb,
         };
+        mp_image_params_guess_csp(&p);
         if (vo_reconfig(vo, &p) < 0)
             goto err;
         struct track *track = mpctx->current_track[0][STREAM_VIDEO];
+        update_window_title(mpctx, true);
         update_content_type(mpctx, track);
         update_screensaver_state(mpctx);
         vo_set_paused(vo, true);
@@ -1309,8 +1315,6 @@ void run_playloop(struct MPContext *mpctx)
     handle_option_callbacks(mpctx);
 
     handle_chapter_change(mpctx);
-
-    handle_force_window(mpctx, false);
 }
 
 void mp_idle(struct MPContext *mpctx)

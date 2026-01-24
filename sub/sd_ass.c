@@ -76,7 +76,7 @@ const struct m_sub_options mp_sub_filter_opts = {
     .opts = (const struct m_option[]){
         {"sdh", OPT_BOOL(sub_filter_SDH)},
         {"sdh-harder", OPT_BOOL(sub_filter_SDH_harder)},
-        {"sdh-enclosures", OPT_STRING(sub_filter_SDH_enclosures)},
+        {"sdh-enclosures", OPT_STRINGLIST(sub_filter_SDH_enclosures)},
         {"regex-enable", OPT_BOOL(rf_enable)},
         {"regex-plain", OPT_BOOL(rf_plain)},
         {"regex", OPT_STRINGLIST(rf_items)},
@@ -86,7 +86,12 @@ const struct m_sub_options mp_sub_filter_opts = {
     },
     .size = sizeof(OPT_BASE_STRUCT),
     .defaults = &(OPT_BASE_STRUCT){
-        .sub_filter_SDH_enclosures = "([\uFF08",
+        .sub_filter_SDH_enclosures = (char *[]) {
+            "()",
+            "[]",
+            "\uFF08\uFF09",
+            NULL
+        },
         .rf_enable = true,
     },
     .change_flags = UPDATE_SUB_FILT,
@@ -282,6 +287,7 @@ static void assobjects_init(struct sd *sd)
 #endif
 
     enable_output(sd, true);
+    ass_set_cache_limits(ctx->ass_renderer, sd->opts->sub_glyph_limit, sd->opts->sub_bitmap_max_size);
 }
 
 static void assobjects_destroy(struct sd *sd)
@@ -476,17 +482,19 @@ static void decode(struct sd *sd, struct demux_packet *packet)
             };
             filter_and_add(sd, &pkt2);
         }
-        if (sub_duration == UNKNOWN_DURATION) {
-            for (int n = track->n_events - 2; n >= 0; n--) {
-                if (track->events[n].Duration == UNKNOWN_DURATION * 1000) {
-                    if (track->events[n].Start != track->events[n + 1].Start) {
-                        track->events[n].Duration = track->events[n + 1].Start -
-                                                    track->events[n].Start;
-                    } else {
-                        track->events[n].Duration = track->events[n + 1].Duration;
-                    }
+        for (int n = track->n_events - 1; n >= 0; n--) {
+            if (track->events[track->n_events - 1].Start == track->events[n].Start)
+                continue;
+            if (track->events[n].Duration == UNKNOWN_DURATION * 1000) {
+                if (track->events[n].Start < track->events[n + 1].Start) {
+                    track->events[n].Duration = track->events[n + 1].Start -
+                                                track->events[n].Start;
+                } else if (track->events[n].Start == track->events[n + 1].Start) {
+                    track->events[n].Duration = track->events[n + 1].Duration;
                 }
             }
+            if (n > 0 && track->events[n].Start != track->events[n - 1].Start)
+                break;
         }
     } else {
         // Note that for this packet format, libass has an internal mechanism
@@ -662,8 +670,8 @@ static long long find_timestamp(struct sd *sd, double pts)
 
     // Try to fix small gaps and overlaps.
     ASS_Track *track = priv->ass_track;
-    int threshold = SUB_GAP_THRESHOLD * 1000;
-    int keep = SUB_GAP_KEEP * 1000;
+    int threshold = sd->opts->sub_fix_timing_threshold;
+    int keep = sd->opts->sub_fix_timing_keep;
 
     // Find the "current" event.
     ASS_Event *ev[2] = {0};
@@ -1097,9 +1105,9 @@ static void mangle_colors(struct sd *sd, struct sub_bitmaps *parts)
     // NONE is a bit random, but the intention is: don't modify colors.
     if (trackcsp == YCBCR_NONE)
         return;
-    if (trackcsp < sizeof(ass_csp) / sizeof(ass_csp[0]))
+    if (trackcsp < MP_ARRAY_SIZE(ass_csp))
         csp = ass_csp[trackcsp];
-    if (trackcsp < sizeof(ass_levels) / sizeof(ass_levels[0]))
+    if (trackcsp <  MP_ARRAY_SIZE(ass_levels))
         levels = ass_levels[trackcsp];
     if (trackcsp == YCBCR_DEFAULT) {
         csp = PL_COLOR_SYSTEM_BT_601;

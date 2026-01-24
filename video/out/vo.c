@@ -69,11 +69,10 @@ extern const struct vo_driver video_out_kitty;
 
 static const struct vo_driver *const video_out_drivers[] =
 {
-#if HAVE_ANDROID
-    &video_out_mediacodec_embed,
-#endif
-    &video_out_gpu,
+    // high-quality and well-supported VOs first:
     &video_out_gpu_next,
+    &video_out_gpu,
+
 #if HAVE_VDPAU
     &video_out_vdpau,
 #endif
@@ -85,6 +84,9 @@ static const struct vo_driver *const video_out_drivers[] =
 #endif
 #if HAVE_XV
     &video_out_xv,
+#endif
+#if HAVE_ANDROID
+    &video_out_mediacodec_embed,
 #endif
 #if HAVE_SDL2_VIDEO
     &video_out_sdl,
@@ -100,6 +102,7 @@ static const struct vo_driver *const video_out_drivers[] =
 #endif
     &video_out_libmpv,
     &video_out_null,
+
     // should not be auto-selected
     &video_out_image,
     &video_out_tct,
@@ -253,8 +256,6 @@ static void dealloc_vo(struct vo *vo)
 
     // These must be free'd before vo->in->dispatch.
     talloc_free(vo->opts_cache);
-    talloc_free(vo->gl_opts_cache);
-    talloc_free(vo->eq_opts_cache);
     mp_mutex_destroy(&vo->params_mutex);
 
     mp_mutex_destroy(&vo->in->lock);
@@ -304,9 +305,6 @@ static struct vo *vo_create(bool probing, struct mpv_global *global,
 
     m_config_cache_set_dispatch_change_cb(vo->opts_cache, vo->in->dispatch,
                                           update_opts, vo);
-
-    vo->gl_opts_cache = m_config_cache_alloc(NULL, global, &gl_video_conf);
-    vo->eq_opts_cache = m_config_cache_alloc(NULL, global, &mp_csp_equalizer_conf);
 
     mp_input_set_mouse_transform(vo->input_ctx, NULL, NULL);
     if (vo->driver->encode != !!vo->encode_lavc_ctx)
@@ -579,6 +577,9 @@ static void check_vo_caps(struct vo *vo)
                    "video output does not support this.\n", rot);
         }
     }
+    if (vo->params->vflip && !(vo->driver->caps & VO_CAP_VFLIP))
+        MP_WARN(vo, "Video is flagged as vertically flipped, but the "
+                    "video output does not support this.\n");
 }
 
 static void run_reconfig(void *p)
@@ -835,9 +836,7 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
 {
     struct vo_internal *in = vo->in;
     mp_mutex_lock(&in->lock);
-    bool blocked = vo->driver->initially_blocked &&
-                   !(in->internal_events & VO_EVENT_INITIAL_UNBLOCK);
-    bool r = vo->config_ok && !in->frame_queued && !blocked &&
+    bool r = vo->config_ok && !in->frame_queued &&
              (!in->current_frame || in->current_frame->num_vsyncs < 1);
     if (r && next_pts >= 0) {
         // Don't show the frame too early - it would basically freeze the
@@ -1183,8 +1182,17 @@ static MP_THREAD_VOID vo_thread(void *ptr)
         if (send_pause)
             vo->driver->control(vo, vo_paused ? VOCTRL_PAUSE : VOCTRL_RESUME, NULL);
         if (wait_until > now && redraw) {
-            vo->driver->control(vo, VOCTRL_REDRAW, NULL);
-            do_redraw(vo); // now is a good time
+            // Allow manual redraws at most at slightly over display fps.
+            int64_t max_interval = (MP_TIME_S_TO_NS(1) / MPMAX(in->display_fps, 10)) / 1.1;
+            // Some windowing platforms break if we submit frames too fast.
+            if (vo->previous_redraw_time + max_interval <= now) {
+                vo->driver->control(vo, VOCTRL_REDRAW, NULL);
+                do_redraw(vo); // now is a good time
+                vo->previous_redraw_time = now;
+            } else {
+                in->request_redraw = true;
+                wait_vo(vo, now + max_interval);
+            }
             continue;
         }
         if (vo->want_redraw) // might have been set by VOCTRLs
@@ -1409,6 +1417,11 @@ double vo_get_display_fps(struct vo *vo)
     double res = vo->in->display_fps;
     mp_mutex_unlock(&in->lock);
     return res;
+}
+
+void * vo_get_display_swapchain(struct vo *vo)
+{
+    return vo->display_swapchain;
 }
 
 // Set specific event flags, and wakeup the playback core if needed.

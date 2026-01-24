@@ -41,6 +41,7 @@
 #include "common/stats.h"
 #include "filters/f_decoder_wrapper.h"
 #include "command.h"
+#include "osdep/als.h"
 #include "osdep/threads.h"
 #include "osdep/timer.h"
 #include "common/common.h"
@@ -326,11 +327,11 @@ static char *append_selected_style(struct MPContext *mpctx, char *str)
                mpctx->video_out->osd->opts->osd_selected_color.b,
                mpctx->video_out->osd->opts->osd_selected_color.g,
                mpctx->video_out->osd->opts->osd_selected_color.r,
-               255 - mpctx->video_out->osd->opts->osd_selected_color.a,
+               (uint8_t)(255 - mpctx->video_out->osd->opts->osd_selected_color.a),
                mpctx->video_out->osd->opts->osd_selected_outline_color.b,
                mpctx->video_out->osd->opts->osd_selected_outline_color.g,
                mpctx->video_out->osd->opts->osd_selected_outline_color.r,
-               255 - mpctx->video_out->osd->opts->osd_selected_outline_color.a,
+               (uint8_t)(255 - mpctx->video_out->osd->opts->osd_selected_outline_color.a),
                OSD_ASS_1);
 }
 
@@ -559,8 +560,12 @@ static int mp_property_stream_open_filename(void *ctx, struct m_property *prop,
         return M_PROPERTY_OK;
     }
     case M_PROPERTY_GET_TYPE:
-    case M_PROPERTY_GET:
-        return m_property_strdup_ro(action, arg, mpctx->stream_open_filename);
+    case M_PROPERTY_GET: {
+        char *path = mp_normalize_path(NULL, mpctx->stream_open_filename);
+        int r = m_property_strdup_ro(action, arg, path);
+        talloc_free(path);
+        return r;
+    }
     }
     return M_PROPERTY_NOT_IMPLEMENTED;
 }
@@ -2418,16 +2423,24 @@ static int property_imgparams(const struct mp_image_params *p, int action, void 
         for (int i = 0; i < desc.num_planes; i++)
             bpp += desc.bpp[i] >> (desc.xs[i] + desc.ys[i]);
 
+#if PL_API_VER >= 344
+        // If PL_ALPHA_NONE is supported, use it directly, unless in auto mode.
+        if ((desc.flags & MP_IMGFLAG_ALPHA) && alpha == PL_ALPHA_UNKNOWN)
+            alpha = PL_ALPHA_INDEPENDENT;
+#else
         // Alpha type is not supported by FFmpeg, so PL_ALPHA_UNKNOWN may mean alpha
         // is of an unknown type, or simply not present. Normalize to AUTO=no alpha.
         if (!!(desc.flags & MP_IMGFLAG_ALPHA) != (alpha != PL_ALPHA_UNKNOWN))
             alpha = (desc.flags & MP_IMGFLAG_ALPHA) ? PL_ALPHA_INDEPENDENT : PL_ALPHA_UNKNOWN;
+#endif
     }
 
     const struct pl_hdr_metadata *hdr = &p->color.hdr;
     bool has_cie_y     = pl_hdr_metadata_contains(hdr, PL_HDR_METADATA_CIE_Y);
     bool has_hdr10     = pl_hdr_metadata_contains(hdr, PL_HDR_METADATA_HDR10);
     bool has_hdr10plus = pl_hdr_metadata_contains(hdr, PL_HDR_METADATA_HDR10PLUS);
+    bool custom_prim   = pl_primaries_valid(&hdr->prim) &&
+                         !pl_raw_primaries_similar(&hdr->prim, pl_raw_primaries_get(p->color.primaries));
 
     bool has_crop = mp_rect_w(p->crop) > 0 && mp_rect_h(p->crop) > 0;
     const char *aspect_name = get_aspect_ratio_name(d_w / (double)d_h);
@@ -2483,6 +2496,14 @@ static int property_imgparams(const struct mp_image_params *p, int action, void 
         {"scene-avg",   SUB_PROP_FLOAT(hdr->scene_avg),    .unavailable = !has_hdr10plus},
         {"max-pq-y",    SUB_PROP_FLOAT(hdr->max_pq_y),     .unavailable = !has_cie_y},
         {"avg-pq-y",    SUB_PROP_FLOAT(hdr->avg_pq_y),     .unavailable = !has_cie_y},
+        {"prim-red-x",   SUB_PROP_FLOAT(hdr->prim.red.x),  .unavailable = !custom_prim },
+        {"prim-red-y",   SUB_PROP_FLOAT(hdr->prim.red.y),  .unavailable = !custom_prim },
+        {"prim-green-x", SUB_PROP_FLOAT(hdr->prim.green.x),.unavailable = !custom_prim },
+        {"prim-green-y", SUB_PROP_FLOAT(hdr->prim.green.y),.unavailable = !custom_prim },
+        {"prim-blue-x",  SUB_PROP_FLOAT(hdr->prim.blue.x), .unavailable = !custom_prim },
+        {"prim-blue-y",  SUB_PROP_FLOAT(hdr->prim.blue.y), .unavailable = !custom_prim },
+        {"prim-white-x", SUB_PROP_FLOAT(hdr->prim.white.x),.unavailable = !custom_prim },
+        {"prim-white-y", SUB_PROP_FLOAT(hdr->prim.white.y),.unavailable = !custom_prim },
         {0}
     };
 
@@ -2504,6 +2525,23 @@ static struct mp_image_params get_video_out_params(struct MPContext *mpctx)
     }
 
     return o_params;
+}
+
+static int mp_property_vo_display_swapchain(void *ctx, struct m_property *prop,
+    int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    struct vo *vo = mpctx->video_out;
+    if (!vo)
+        return M_PROPERTY_UNAVAILABLE;
+
+    void *swapchain_ptr = vo_get_display_swapchain(vo);
+    if (swapchain_ptr == NULL)
+        return M_PROPERTY_UNAVAILABLE;
+
+    int64_t swapchain = (intptr_t)swapchain_ptr;
+
+    return m_property_int64_ro(action, arg, swapchain);
 }
 
 static int mp_property_vo_imgparams(void *ctx, struct m_property *prop,
@@ -2800,12 +2838,20 @@ static int mp_property_ambient_light(void *ctx, struct m_property *prop,
                                      int action, void *arg)
 {
     MPContext *mpctx = ctx;
-    struct vo *vo = mpctx->video_out;
-    double lux;
-    if (!vo || vo_control(vo, VOCTRL_GET_AMBIENT_LUX, &lux) < 1)
-        return M_PROPERTY_UNAVAILABLE;
+    if (!mpctx->als_state) {
+        mpctx->als_state = mp_als_create(mpctx, mpctx);
+    }
 
-    return m_property_double_ro(action, arg, lux);
+    double lux;
+    switch (mp_als_get_lux(mpctx->als_state, &lux)) {
+    case MP_ALS_STATUS_OK:
+        return m_property_double_ro(action, arg, lux);
+    case MP_ALS_STATUS_NODEVICE:
+        return M_PROPERTY_UNAVAILABLE;
+    case MP_ALS_STATUS_READFAILED:
+    default:
+        return M_PROPERTY_ERROR;
+    }
 }
 
 static int mp_property_focused(void *ctx, struct m_property *prop,
@@ -2828,7 +2874,7 @@ static int mp_property_display_names(void *ctx, struct m_property *prop,
 {
     MPContext *mpctx = ctx;
     struct vo *vo = mpctx->video_out;
-    if (!vo)
+    if (!vo || vo->display_swapchain)
         return M_PROPERTY_UNAVAILABLE;
 
     switch (action) {
@@ -3091,6 +3137,55 @@ static int mp_property_touch_pos(void *ctx, struct m_property *prop,
                                 get_touch_pos, (void *)pos);
 }
 
+static int mp_property_tablet_pos(void *ctx, struct m_property *prop,
+                                 int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+
+    switch (action) {
+    case M_PROPERTY_GET_TYPE:
+        *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_NODE};
+        return M_PROPERTY_OK;
+
+    case M_PROPERTY_GET: {
+        int xs, ys;
+        bool tool_in_proximity;
+        bool tool_down;
+        bool tool_stylus_btn1_pressed;
+        bool tool_stylus_btn2_pressed;
+        bool tool_stylus_btn3_pressed;
+        bool pad_focus;
+        bool *pad_buttons_pressed;
+        int pad_buttons;
+        mp_input_get_tablet_pos(mpctx->input, &xs, &ys, &tool_in_proximity, &tool_down,
+            &tool_stylus_btn1_pressed, &tool_stylus_btn2_pressed, &tool_stylus_btn3_pressed,
+            &pad_focus, &pad_buttons_pressed, &pad_buttons);
+
+        struct mpv_node node;
+        node_init(&node, MPV_FORMAT_NODE_MAP, NULL);
+        node_map_add_int64(&node, "x", xs);
+        node_map_add_int64(&node, "y", ys);
+        node_map_add_flag(&node, "tool-in-proximity", tool_in_proximity);
+        node_map_add_string(&node, "tool-tip", tool_down ? "down" : "up");
+        node_map_add_string(&node, "tool-stylus-btn1", tool_stylus_btn1_pressed ? "pressed" : "released");
+        node_map_add_string(&node, "tool-stylus-btn2", tool_stylus_btn2_pressed ? "pressed" : "released");
+        node_map_add_string(&node, "tool-stylus-btn3", tool_stylus_btn3_pressed ? "pressed" : "released");
+        node_map_add_flag(&node, "pad-focus", pad_focus);
+
+        struct mpv_node *args = node_map_add(&node, "pad-btns", MPV_FORMAT_NODE_MAP);
+        for (int i = 0; i < pad_buttons; i++) {
+            char *name = mp_tprintf(2, "%d", i + 1);
+            node_map_add_string(args, name, pad_buttons_pressed[i] ? "pressed" : "released");
+        }
+
+        *(struct mpv_node *)arg = node;
+        return M_PROPERTY_OK;
+    }
+    }
+
+    return M_PROPERTY_NOT_IMPLEMENTED;
+}
+
 /// Video fps (RO)
 static int mp_property_fps(void *ctx, struct m_property *prop,
                            int action, void *arg)
@@ -3098,7 +3193,7 @@ static int mp_property_fps(void *ctx, struct m_property *prop,
     MPContext *mpctx = ctx;
     float fps = mpctx->vo_chain ? mpctx->vo_chain->filter->container_fps : 0;
     if (fps < 0.1 || !isfinite(fps))
-        return M_PROPERTY_UNAVAILABLE;;
+        return M_PROPERTY_UNAVAILABLE;
     return m_property_float_ro(action, arg, fps);
 }
 
@@ -3550,7 +3645,10 @@ static int mp_property_current_watch_later_dir(void *ctx, struct m_property *pro
                                                int action, void *arg)
 {
     MPContext *mpctx = ctx;
-    return m_property_strdup_ro(action, arg, mp_get_playback_resume_dir(mpctx));
+    char *dir = mp_get_playback_resume_dir(mpctx);
+    int r = m_property_strdup_ro(action, arg, dir);
+    talloc_free(dir);
+    return r;
 }
 
 static int mp_property_protocols(void *ctx, struct m_property *prop,
@@ -4312,6 +4410,7 @@ static const struct m_property mp_properties_base[] = {
     {"deinterlace-active", mp_property_deinterlace},
     {"idle-active", mp_property_idle},
     {"window-id", mp_property_window_id},
+    {"display-swapchain", mp_property_vo_display_swapchain},
 
     {"chapter-list", mp_property_list_chapters},
     {"track-list", mp_property_list_tracks},
@@ -4382,6 +4481,7 @@ static const struct m_property mp_properties_base[] = {
 
     {"mouse-pos", mp_property_mouse_pos},
     {"touch-pos", mp_property_touch_pos},
+    {"tablet-pos", mp_property_tablet_pos},
 
     // Subs
     {"sid", mp_property_switch_track, .priv = (void *)(const int[]){0, STREAM_SUB}},
@@ -4519,7 +4619,7 @@ static const char *const *const mp_event_property_change[] = {
     E(MP_EVENT_CHANGE_PLAYLIST, "playlist", "playlist-pos", "playlist-pos-1",
       "playlist-count", "playlist/count", "playlist-current-pos",
       "playlist-playing-pos"),
-    E(MP_EVENT_INPUT_PROCESSED, "mouse-pos", "touch-pos"),
+    E(MP_EVENT_INPUT_PROCESSED, "mouse-pos", "touch-pos", "tablet-pos"),
     E(MP_EVENT_CORE_IDLE, "core-idle", "eof-reached"),
 };
 #undef E
@@ -5750,7 +5850,10 @@ static void cmd_frame_step(void *p)
     }
 
     if (flags == 1) {
-        if (!cmd->cmd->is_up)
+        // frame-step command has on_updown set so it is called on both down
+        // and up, but stepping should only be triggered when it matches the
+        // emit_on_up flag.
+        if (cmd->cmd->is_up == cmd->cmd->emit_on_up)
             add_step_frame(mpctx, frames, true);
     } else {
         if (cmd->cmd->is_up) {
@@ -6305,6 +6408,8 @@ static void cmd_track_reload(void *p)
         flags |= t->attached_picture ? TRACK_ATTACHED_PICTURE : 0;
         flags |= t->hearing_impaired_track ? TRACK_HEARING_IMPAIRED : 0;
         flags |= t->visual_impaired_track ? TRACK_VISUAL_IMPAIRED : 0;
+        flags |= t->forced_track ? TRACK_FORCED : 0;
+        flags |= t->default_track ? TRACK_DEFAULT : 0;
         mp_remove_track(mpctx, t);
         nt_num = mp_add_external_file(mpctx, filename, type, cmd->abort->cancel,
                                       flags);
@@ -6319,9 +6424,13 @@ static void cmd_track_reload(void *p)
     struct track *nt = mpctx->tracks[nt_num];
 
     if (!nt->lang) {
+        enum track_flags flags = 0;
         bstr lang = mp_guess_lang_from_filename(bstr0(nt->external_filename), NULL,
-                                                &nt->hearing_impaired_track);
+                                                &flags);
         nt->lang = bstrto0(nt, lang);
+        nt->hearing_impaired_track = flags & TRACK_HEARING_IMPAIRED;
+        nt->forced_track = flags & TRACK_FORCED;
+        nt->default_track = flags & TRACK_DEFAULT;
     }
 
     mp_switch_track(mpctx, nt->type, nt, 0);
@@ -7155,7 +7264,9 @@ const struct mp_cmd_def mp_cmds[] = {
             {"flags", OPT_FLAGS(v.i,
                 {"select", 0}, {"auto", 1}, {"cached", 2},
                 {"hearing-impaired", TRACK_HEARING_IMPAIRED},
-                {"visual-impaired", TRACK_VISUAL_IMPAIRED}),
+                {"visual-impaired", TRACK_VISUAL_IMPAIRED},
+                {"forced", TRACK_FORCED},
+                {"default", TRACK_DEFAULT}),
                 .flags = MP_CMD_OPT_ARG},
             {"title", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG},
             {"lang", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG},
@@ -7171,7 +7282,9 @@ const struct mp_cmd_def mp_cmds[] = {
             {"flags", OPT_FLAGS(v.i,
                 {"select", 0}, {"auto", 1}, {"cached", 2},
                 {"hearing-impaired", TRACK_HEARING_IMPAIRED},
-                {"visual-impaired", TRACK_VISUAL_IMPAIRED}),
+                {"visual-impaired", TRACK_VISUAL_IMPAIRED},
+                {"forced", TRACK_FORCED},
+                {"default", TRACK_DEFAULT}),
                 .flags = MP_CMD_OPT_ARG},
             {"title", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG},
             {"lang", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG},
@@ -7188,7 +7301,9 @@ const struct mp_cmd_def mp_cmds[] = {
                 {"select", 0}, {"auto", 1}, {"cached", 2},
                 {"hearing-impaired", TRACK_HEARING_IMPAIRED},
                 {"visual-impaired", TRACK_VISUAL_IMPAIRED},
-                {"attached-picture", TRACK_ATTACHED_PICTURE}),
+                {"attached-picture", TRACK_ATTACHED_PICTURE},
+                {"forced", TRACK_FORCED},
+                {"default", TRACK_DEFAULT}),
                 .flags = MP_CMD_OPT_ARG},
             {"title", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG},
             {"lang", OPT_STRING(v.s), .flags = MP_CMD_OPT_ARG},
@@ -7241,11 +7356,14 @@ const struct mp_cmd_def mp_cmds[] = {
     { "screenshot", cmd_screenshot,
         {
             {"flags", OPT_FLAGS(v.i,
-                {"video", 4|0}, {"-", 4|0},
-                {"window", 4|1},
-                {"subtitles", 4|2},
-                {"each-frame", 8}),
-                OPTDEF_INT(4|2)},
+                {"video", 0},
+                {"scaled", 1},
+                {"subtitles", 2},
+                {"osd", 4},
+                {"each-frame", 8},
+                {"-", 0},
+                {"window", 1|2|4}),
+                OPTDEF_INT(2)},
             // backwards compatibility
             {"legacy", OPT_CHOICE(v.i,
                 {"unused", 0}, {"single", 0},
@@ -7259,8 +7377,10 @@ const struct mp_cmd_def mp_cmds[] = {
             {"filename", OPT_STRING(v.s)},
             {"flags", OPT_CHOICE(v.i,
                 {"video", 0},
-                {"window", 1},
-                {"subtitles", 2}),
+                {"scaled", 1},
+                {"subtitles", 2},
+                {"osd", 4},
+                {"window", 1|2|4}),
                 OPTDEF_INT(2)},
         },
         .spawn_thread = true,
@@ -7269,8 +7389,10 @@ const struct mp_cmd_def mp_cmds[] = {
         {
             {"flags", OPT_CHOICE(v.i,
                 {"video", 0},
-                {"window", 1},
-                {"subtitles", 2}),
+                {"scaled", 1},
+                {"subtitles", 2},
+                {"osd", 4},
+                {"window", 1|2|4}),
                 OPTDEF_INT(2)},
              {"format", OPT_CHOICE(v.i,
                 {"bgr0", 0},
@@ -7316,7 +7438,7 @@ const struct mp_cmd_def mp_cmds[] = {
     { "playlist-clear", cmd_playlist_clear },
     { "playlist-remove", cmd_playlist_remove, {
         {"index", OPT_CHOICE(v.i, {"current", -1}),
-            .flags = MP_CMD_OPT_ARG, M_RANGE(0, INT_MAX)}, }},
+            M_RANGE(0, INT_MAX)}, }},
     { "playlist-move", cmd_playlist_move,  { {"index1", OPT_INT(v.i)},
                                              {"index2", OPT_INT(v.i)}, }},
     { "run", cmd_run, { {"command", OPT_STRING(v.s)},
@@ -7683,8 +7805,10 @@ void run_command_opts(struct MPContext *mpctx)
     for (int i = 0; opts->input_commands[i]; i++) {
         struct mp_cmd *cmd = mp_input_parse_cmd(mpctx->input, bstr0(opts->input_commands[i]),
                                                 "the command line");
-        cmd->coalesce = true;
-        mp_input_queue_cmd(mpctx->input, cmd);
+        if (cmd) {
+            cmd->coalesce = true;
+            mp_input_queue_cmd(mpctx->input, cmd);
+        }
     }
     ctx->command_opts_processed = true;
 }
@@ -7863,6 +7987,9 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
         struct mp_decoder_wrapper *dec = track ? track->dec : NULL;
         if (dec) {
             mp_decoder_wrapper_control(dec, VDCTRL_REINIT, NULL);
+            // filter chain might not change (which normally triggers this), but
+            // hwdec will.
+            mp_notify(mpctx, MPV_EVENT_VIDEO_RECONFIG, NULL);
             double last_pts = mpctx->video_pts;
             if (last_pts != MP_NOPTS_VALUE)
                 queue_seek(mpctx, MPSEEK_ABSOLUTE, last_pts, MPSEEK_EXACT, 0);
@@ -7890,7 +8017,7 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
             queue_seek(mpctx, MPSEEK_RELATIVE, 0.0, MPSEEK_EXACT, 0);
     }
 
-    if (opt_ptr == &opts->vo->android_surface_size) {
+    if (opt_ptr == &opts->vo->android_surface_size || opt_ptr == &opts->vo->d3d11_composition_size) {
         if (mpctx->video_out)
             vo_control(mpctx->video_out, VOCTRL_EXTERNAL_RESIZE, NULL);
     }
@@ -7900,7 +8027,8 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
         run_command_opts(mpctx);
     }
 
-    if (opt_ptr == &opts->playback_speed || opt_ptr == &opts->playback_pitch) {
+    if (opt_ptr == &opts->playback_speed || opt_ptr == &opts->playback_pitch ||
+        opt_ptr == &opts->pitch_correction) {
         update_playback_speed(mpctx);
         mp_wakeup_core(mpctx);
     }
@@ -7925,6 +8053,18 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
             }
         }
     }
+
+#if HAVE_LIBBLURAY
+    if (opt_ptr == &opts->stream_bluray_opts->angle) {
+        struct demuxer *demuxer = mpctx->demuxer;
+        if (mpctx->playback_initialized && demuxer && demuxer->stream &&
+                (!strcmp(demuxer->stream->info->name, "bd") ||
+                 !strcmp(demuxer->stream->info->name, "bdmv/bluray"))) {
+            int angle = opts->stream_bluray_opts->angle - 1;
+            stream_control(demuxer->stream, STREAM_CTRL_SET_ANGLE, &angle);
+        }
+    }
+#endif
 
     if (opt_ptr == &opts->pause)
         set_pause_state(mpctx, opts->pause);
@@ -7982,6 +8122,9 @@ void mp_option_run_callback(struct MPContext *mpctx, struct mp_option_callback *
 
     if (opt_ptr == &opts->vo->taskbar_progress)
         update_vo_playback_state(mpctx);
+
+    if (opt_ptr == &opts->force_vo)
+        handle_force_window(mpctx, false);
 
     if (opt_ptr == &opts->image_display_duration && mpctx->vo_chain
         && mpctx->vo_chain->is_sparse && !mpctx->ao_chain

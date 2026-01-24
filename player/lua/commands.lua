@@ -18,6 +18,7 @@ License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
 local options = {
     persist_history = false,
     history_path = "~~state/command_history.txt",
+    remember_input = true,
 }
 
 local input = require "mp.input"
@@ -137,8 +138,10 @@ end
 local function closed(text, cursor_position)
     mp.enable_messages("silent:terminal-default")
 
-    last_text = text
-    last_cursor_position = cursor_position
+    if options.remember_input then
+        last_text = text
+        last_cursor_position = cursor_position
+    end
 end
 
 local function command_list()
@@ -319,7 +322,7 @@ local function command_flags_at_1st_argument_list(command)
         ["playlist-remove"] = {"current"},
         ["rescan-external-files"] = {"reselect", "keep-selection"},
         ["revert-seek"] = {"mark", "mark-permanent"},
-        ["screenshot"] = {"subtitles", "video", "window", "each-frame"},
+        ["screenshot"] = {"subtitles", "video", "window", "osd", "scaled", "each-frame"},
         ["stop"] = {"keep-playlist"},
     }
     flags["playlist-prev"] = flags["playlist-next"]
@@ -334,7 +337,7 @@ local function command_flags_at_2nd_argument_list(command)
         ["frame-step"] = {"play", "seek", "mute"},
         ["loadfile"] = {"replace", "append", "append-play", "insert-next",
                         "insert-next-play", "insert-at", "insert-at-play"},
-        ["screenshot-to-file"] = {"subtitles", "video", "window", "each-frame"},
+        ["screenshot-to-file"] = {"subtitles", "video", "window", "osd", "scaled", "each-frame"},
         ["screenshot-raw"] = {"bgr0", "bgra", "rgba", "rgba64"},
         ["seek"] = {"relative", "absolute", "absolute-percent",
                     "relative-percent", "keyframes", "exact"},

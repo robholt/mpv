@@ -955,9 +955,11 @@ static void schedule_frame(struct MPContext *mpctx, struct vo_frame *frame)
     }
 
     if (!mpctx->display_sync_active) {
-        mpctx->speed_factor_a = 1.0;
-        mpctx->speed_factor_v = 1.0;
-        update_playback_speed(mpctx);
+        if (mpctx->num_past_frames > 1 && mpctx->past_frames[1].num_vsyncs >= 0) {
+            mpctx->speed_factor_a = 1.0;
+            mpctx->speed_factor_v = 1.0;
+            update_playback_speed(mpctx);
+        }
 
         update_av_diff(mpctx, mpctx->time_frame > 0 ?
             mpctx->time_frame * mpctx->video_speed : 0);
@@ -1219,6 +1221,10 @@ void write_video(struct MPContext *mpctx)
     // (NB: in theory, the 1st frame after display sync mode change uses the
     //      wrong waiting mode)
     if (!vo_is_ready_for_frame(vo, mpctx->display_sync_active ? -1 : pts))
+        return;
+
+    // In encoding mode, wait for the ao to finish initializing.
+    if (mpctx->encode_lavc_ctx && mpctx->current_track[0][STREAM_AUDIO] && !mpctx->ao)
         return;
 
     mp_assert(mpctx->num_next_frames >= 1);

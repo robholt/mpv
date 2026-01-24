@@ -159,7 +159,7 @@ char *mp_normalize_path(void *talloc_ctx, const char *path)
     if (!path)
         return NULL;
 
-    if (mp_is_url(bstr0(path)))
+    if (mp_is_url(bstr0(path)) || !strcmp(path, "-"))
         return talloc_strdup(talloc_ctx, path);
 
     void *tmp = talloc_new(NULL);
@@ -287,6 +287,9 @@ bstr mp_split_proto(bstr path, bstr *out_url)
 
 void mp_mkdirp(const char *dir)
 {
+    if (mp_path_exists(dir))
+        return;
+
     char *path = talloc_strdup(NULL, dir);
     char *cdir = path + 1;
 
@@ -295,7 +298,7 @@ void mp_mkdirp(const char *dir)
         if (cdir)
             *cdir = 0;
 
-        mkdir(path, 0700);
+        mkdir(path, 0777);
 
         if (cdir)
             *cdir++ = '/';

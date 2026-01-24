@@ -146,6 +146,7 @@ local icons = {
     next = "\238\132\129",           -- E101
     pause = "\238\128\130",          -- E002
     play = "\238\132\129",           -- E101
+    clock = "\238\128\134",          -- E006
     play_backward = "\238\132\144",  -- E110
     skip_backward = "\238\128\132",  -- E004
     skip_forward = "\238\128\133",   -- E005
@@ -227,6 +228,7 @@ end
 local state = {
     showtime = nil,                         -- time of last invocation (last mouse move)
     touchtime = nil,                        -- time of last invocation (last touch event)
+    touchpoints = {},                       -- current touch points
     osc_visible = false,
     anistart = nil,                         -- time when the animation started
     anitype = nil,                          -- current type of animation
@@ -240,6 +242,7 @@ local state = {
     initREQ = false,                        -- is a re-init request pending?
     marginsREQ = false,                     -- is a margins update pending?
     last_mouseX = nil, last_mouseY = nil,   -- last mouse position, to detect significant mouse movement
+    last_touchX = -1, last_touchY = -1,     -- last touch position
     mouse_in_window = false,
     fullscreen = false,
     tick_timer = nil,
@@ -333,9 +336,19 @@ local function get_virt_scale_factor()
     return osc_param.playresx / w, osc_param.playresy / h
 end
 
+local function recently_touched()
+    if state.touchtime == nil then
+        return false
+    end
+    return state.touchtime + 1 >= mp.get_time()
+end
+
 -- return mouse position in virtual ASS coordinates (playresx/y)
 local function get_virt_mouse_pos()
-    if state.mouse_in_window then
+    if recently_touched() then
+        local sx, sy = get_virt_scale_factor()
+        return state.last_touchX * sx, state.last_touchY * sy
+    elseif state.mouse_in_window then
         local sx, sy = get_virt_scale_factor()
         local x, y = mp.get_mouse_pos()
         return x * sx, y * sy
@@ -1894,6 +1907,10 @@ local function osc_init()
     ne = new_element("play_pause", "button")
 
     ne.content = function ()
+        if mp.get_property_bool("paused-for-cache") ~= false then
+            return icons.clock
+        end
+
         if not mp.get_property_native("pause") then
             return icons.pause
         end
@@ -2242,9 +2259,17 @@ local function mouse_leave()
     state.mouse_in_window = false
 end
 
-local function handle_touch()
-    --remember last time of invocation (touch event)
-    state.touchtime = mp.get_time()
+local function handle_touch(_, touchpoints)
+    --remember last touch points
+    if touchpoints then
+        state.touchpoints = touchpoints
+        if #touchpoints > 0 then
+            --remember last time of invocation (touch event)
+            state.touchtime = mp.get_time()
+            state.last_touchX = touchpoints[1].x
+            state.last_touchY = touchpoints[1].y
+        end
+    end
 end
 
 
@@ -2483,7 +2508,7 @@ local function render()
                 if state.osc_visible then
                     mp.enable_key_bindings("window-controls-title", "allow-vo-dragging")
                 else
-                    mp.disable_key_bindings("window-controls-title", "allow-vo-dragging")
+                    mp.disable_key_bindings("window-controls-title")
                 end
                 state.windowcontrols_title = state.osc_visible
             end
@@ -2651,6 +2676,7 @@ mp.register_event("shutdown", shutdown)
 mp.register_event("start-file", request_init)
 mp.observe_property("track-list", "native", request_init)
 mp.observe_property("playlist-count", "native", request_init)
+mp.observe_property("playlist-pos", "native", request_init)
 mp.observe_property("chapter-list", "native", function(_, list)
     list = list or {}  -- safety, shouldn't return nil
     table.sort(list, function(a, b) return a.time < b.time end)
@@ -2717,6 +2743,8 @@ end)
 
 mp.observe_property("display-fps", "number", set_tick_delay)
 mp.observe_property("pause", "bool", pause_state)
+mp.observe_property("volume", "number", request_tick)
+mp.observe_property("mute", "bool", request_tick)
 mp.observe_property("demuxer-cache-state", "native", cache_state)
 mp.observe_property("vo-configured", "bool", request_tick)
 mp.observe_property("playback-time", "number", request_tick)

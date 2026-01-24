@@ -106,7 +106,7 @@ struct pl_parser {
     int autocreate_playlist;
     enum demux_check check_level;
     struct stream *real_stream;
-    char *format;
+    const char *format;
     char *codepage;
     struct demux_playlist_opts *opts;
     struct MPOpts *mp_opts;
@@ -277,6 +277,8 @@ ok:
                 title = bstrto0(NULL, btitle);
             }
         } else if (bstr_startswith0(line_dup, "#EXT-X-")) {
+            // Note that this is only used for user advice. Actual HLS demuxing
+            // must happen through demux_lavf.
             p->format = "hls";
         } else if (line_dup.len > 0 && !bstr_startswith0(line_dup, "#")) {
             char *fn = bstrto0(NULL, line_dup);
@@ -700,7 +702,8 @@ static int open_file(struct demuxer *demuxer, enum demux_check check)
         bstr proto = mp_split_proto(bstr0(demuxer->filename), NULL);
         // Don't add base path to self-expanding protocols
         if (bstrcasecmp0(proto, "memory") && bstrcasecmp0(proto, "lavf") &&
-            bstrcasecmp0(proto, "hex") && bstrcasecmp0(proto, "data"))
+            bstrcasecmp0(proto, "hex") && bstrcasecmp0(proto, "data") &&
+            bstrcasecmp0(proto, "fd"))
         {
             playlist_add_base_path(p->pl, mp_dirname(demuxer->filename));
         }

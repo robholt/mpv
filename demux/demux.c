@@ -2047,7 +2047,7 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
 
     record_packet(in, dp);
 
-    if (in->cache && in->d_user->opts->disk_cache) {
+    if (in->cache && in->d_user->opts->disk_cache && !dp->is_wrapped_avframe) {
         int64_t pos = demux_cache_write(in->cache, dp);
         if (pos >= 0) {
             demux_packet_unref_contents(dp);
@@ -2519,8 +2519,14 @@ static void update_opts(struct demuxer *demuxer)
 // Make demuxing progress. Return whether progress was made.
 static bool thread_work(struct demux_internal *in)
 {
-    if (m_config_cache_update(in->d_user->opts_cache))
+    struct demux_opts *opts = in->d_user->opts;
+    size_t old_max_bytes = opts->max_bytes;
+    size_t old_max_bytes_bw = opts->max_bytes_bw;
+    if (m_config_cache_update(in->d_user->opts_cache)) {
         update_opts(in->d_user);
+        if (opts->max_bytes + opts->max_bytes_bw < old_max_bytes + old_max_bytes_bw)
+            demux_packet_pool_clear(in->packet_pool);
+    }
     if (in->tracks_switched) {
         execute_trackswitch(in);
         return true;
@@ -3188,7 +3194,7 @@ static void demux_init_cuesheet(struct demuxer *demuxer)
     struct cue_file *f = mp_parse_cue(bstr0(cue));
     if (f) {
         if (mp_check_embedded_cue(f) < 0) {
-            MP_WARN(demuxer, "Embedded cue sheet references more than one file. "
+            MP_WARN(demuxer, "Embedded cue sheet references zero or multiple files. "
                     "Ignoring it.\n");
         } else {
             for (int n = 0; n < f->num_tracks; n++) {
@@ -3268,6 +3274,11 @@ static struct demuxer *open_given_type(struct mpv_global *global,
     if (mp_cancel_test(sinfo->cancel))
         return NULL;
 
+    if (params && params->depth > 10) {
+        mp_err(log, "Demuxer recursion depth exceeded.\n");
+        return NULL;
+    }
+
     struct demuxer *demuxer = talloc_ptrtype(NULL, demuxer);
     struct m_config_cache *opts_cache =
         m_config_cache_alloc(demuxer, global, &demux_conf);
@@ -3291,6 +3302,7 @@ static struct demuxer *open_given_type(struct mpv_global *global,
         .opts_cache = opts_cache,
         .events = DEMUX_EVENT_ALL,
         .duration = -1,
+        .depth = params ? params->depth : 0,
     };
 
     struct demux_internal *in = demuxer->in = talloc_ptrtype(demuxer, in);
@@ -3355,6 +3367,7 @@ static struct demuxer *open_given_type(struct mpv_global *global,
                 params2.timeline = tl;
                 params2.is_top_level = params && params->is_top_level;
                 params2.stream_record = params && params->stream_record;
+                params2.depth = params ? params->depth + 1 : 0;
                 sub =
                     open_given_type(global, log, &demuxer_desc_timeline,
                                     NULL, sinfo, &params2, DEMUX_CHECK_FORCE);

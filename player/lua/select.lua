@@ -200,16 +200,8 @@ mp.add_key_binding(nil, "select-vid", function ()
 end)
 
 local function format_time(t, duration)
-    local h = math.floor(t / (60 * 60))
-    t = t - (h * 60 * 60)
-    local m = math.floor(t / 60)
-    local s = t - (m * 60)
-
-    if duration >= 60 * 60 or h > 0 then
-        return string.format("%.2d:%.2d:%.2d", h, m, s)
-    end
-
-    return string.format("%.2d:%.2d", m, s)
+    local fmt = math.max(t, duration) >= 60 * 60 and "%H:%M:%S" or "%M:%S"
+    return mp.format_time(t, fmt)
 end
 
 mp.add_key_binding(nil, "select-chapter", function ()
@@ -246,6 +238,7 @@ mp.add_key_binding(nil, "select-edition", function ()
     end
 
     local editions = {}
+    local default_item = mp.get_property_native("current-edition")
 
     for i, edition in ipairs(edition_list) do
         editions[i] = edition.title or ("Edition " .. edition.id + 1)
@@ -254,7 +247,7 @@ mp.add_key_binding(nil, "select-edition", function ()
     input.select({
         prompt = "Select an edition:",
         items = editions,
-        default_item = mp.get_property_native("current-edition") + 1,
+        default_item = default_item > -1 and default_item + 1,
         submit = function (edition)
             mp.set_property("edition", edition - 1)
         end,
@@ -299,16 +292,76 @@ mp.add_key_binding(nil, "select-subtitle-line", function ()
     local delay = mp.get_property_native("sub-delay")
     local time_pos = mp.get_property_native("time-pos") - delay
     local duration = mp.get_property_native("duration", math.huge)
+    local sub_content = {}
 
-    -- Strip HTML and ASS tags.
-    for line in r.stdout:gsub("<.->", ""):gsub("{\\.-}", ""):gmatch("[^\n]+") do
-        -- ffmpeg outputs LRCs with minutes > 60 instead of adding hours.
-        sub_times[#sub_times + 1] = line:match("%d+") * 60 + line:match(":([%d%.]*)")
-        sub_lines[#sub_lines + 1] = format_time(sub_times[#sub_times], duration) ..
-                                    " " .. line:gsub(".*]", "", 1)
+    -- Strip HTML and ASS tags and process subtitles
+    for line in r.stdout:gmatch("[^\n]+") do
+        -- Clean up tags
+        local sub_line = line:gsub("<.->", "")                -- Strip HTML tags
+                             :gsub("\\h+", " ")               -- Replace '\h' tag
+                             :gsub("{[\\=].-}", "")           -- Remove ASS formatting
+                             :gsub(".-]", "", 1)              -- Remove time info prefix
+                             :gsub("^%s*(.-)%s*$", "%1")      -- Strip whitespace
+                             :gsub("^m%s[mbl%s%-%d%.]+$", "") -- Remove graphics code
 
-        if sub_times[#sub_times] <= time_pos then
-            default_item = #sub_times
+        if sub.codec == "subrip" or (sub_line ~= "" and sub_line:match("^%s+$") == nil) then
+            local sub_time = line:match("%d+") * 60 + line:match(":([%d%.]*)")
+            local time_seconds = math.floor(sub_time)
+            sub_content[time_seconds] = sub_content[time_seconds] or {}
+            sub_content[time_seconds][sub_line] = true
+        end
+    end
+
+    -- Process all timestamps and content into selectable subtitle list
+    for time_seconds, contents in pairs(sub_content) do
+        for sub_line in pairs(contents) do
+            sub_times[#sub_times + 1] = time_seconds
+            sub_lines[#sub_lines + 1] = format_time(time_seconds, duration) .. " " .. sub_line
+        end
+    end
+
+    -- Generate time -> subtitle mapping
+    local time_to_lines = {}
+    for i = 1, #sub_times do
+        local time = sub_times[i]
+        local line = sub_lines[i]
+
+        if not time_to_lines[time] then
+            time_to_lines[time] = {}
+        end
+        table.insert(time_to_lines[time], line)
+    end
+
+    -- Sort by timestamp
+    local sorted_sub_times = {}
+    for i = 1, #sub_times do
+        sorted_sub_times[i] = sub_times[i]
+    end
+    table.sort(sorted_sub_times)
+
+    -- Use a helper table to avoid duplicates
+    local added_times = {}
+
+    -- Rebuild sub_lines and sub_times based on the sorted timestamps
+    local sorted_sub_lines = {}
+    for _, sub_time in ipairs(sorted_sub_times) do
+        -- Iterate over all subtitle content for this timestamp
+        if not added_times[sub_time] then
+            added_times[sub_time] = true
+            for _, line in ipairs(time_to_lines[sub_time]) do
+                table.insert(sorted_sub_lines, line)
+            end
+        end
+    end
+
+    -- Use the sorted subtitle list
+    sub_lines = sorted_sub_lines
+    sub_times = sorted_sub_times
+
+    -- Get the default item (last subtitle before current time position)
+    for i, sub_time in ipairs(sub_times) do
+        if sub_time <= time_pos then
+            default_item = i
         end
     end
 
@@ -580,6 +633,55 @@ mp.add_key_binding(nil, "show-properties", function ()
     })
 end)
 
+local function system_open(path)
+    local platform = mp.get_property("platform")
+    local args
+    if platform == "windows" then
+        args = {"rundll32", "url.dll,FileProtocolHandler", path}
+    elseif platform == "darwin" then
+        args = {"open", path}
+    else
+        args = {"gio", "open", path}
+    end
+
+    mp.commandv("run", unpack(args))
+end
+
+local function edit_config_file(filename)
+    if not mp.get_property_bool("config") then
+        show_warning("Editing config files with --no-config is not supported.")
+        return
+    end
+
+    local path = mp.find_config_file(filename)
+
+    if not path then
+        path = mp.command_native({"expand-path", "~~/" .. filename})
+        local file_handle, error_message = io.open(path, "w")
+
+        if not file_handle then
+            show_error(error_message)
+            return
+        end
+
+        file_handle:close()
+    end
+
+    system_open(path)
+end
+
+mp.add_key_binding(nil, "edit-config-file", function ()
+    edit_config_file("mpv.conf")
+end)
+
+mp.add_key_binding(nil, "edit-input-conf", function ()
+    edit_config_file("input.conf")
+end)
+
+mp.add_key_binding(nil, "open-docs", function ()
+    system_open("https://mpv.io/manual/")
+end)
+
 mp.add_key_binding(nil, "menu", function ()
     local sub_track_count = 0
     local audio_track_count = 0
@@ -618,9 +720,13 @@ mp.add_key_binding(nil, "menu", function ()
         {"Key bindings", "script-binding select/select-binding", true},
         {"History", "script-binding select/select-watch-history", true},
         {"Watch later", "script-binding select/select-watch-later", true},
-        {"Stats for nerds", "script-binding stats/display-page-1-toggle", true},
-        {"File info", "script-binding stats/display-page-5-toggle", mp.get_property("filename")},
+        {"Playback statistics", "script-binding stats/display-page-1-toggle", true},
+        {"File information", "script-binding stats/display-page-5-toggle",
+         mp.get_property("filename")},
+        {"Edit config file", "script-binding select/edit-config-file", true},
+        {"Edit key bindings", "script-binding select/edit-input-conf", true},
         {"Help", "script-binding stats/display-page-4-toggle", true},
+        {"Online documentation", "script-binding select/open-docs", true},
     }
 
     local labels = {}
@@ -640,7 +746,7 @@ mp.add_key_binding(nil, "menu", function ()
         submit = function (i)
             mp.command(commands[i])
 
-            if not commands[i]:find("^script%-binding select/") then
+            if not commands[i]:find("^script%-binding select/select") then
                 input.terminate()
             end
         end,

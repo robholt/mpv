@@ -3,8 +3,7 @@ COMMAND INTERFACE
 
 The mpv core can be controlled with commands and properties. A number of ways
 to interact with the player use them: key bindings (``input.conf``), OSD
-(showing information with properties), JSON IPC, the client API (``libmpv``),
-and the classic slave mode.
+(showing information with properties), JSON IPC and the client API (``libmpv``).
 
 input.conf
 ----------
@@ -75,10 +74,25 @@ It's also possible to bind a command to a sequence of keys:
 
 (This is not shown in the general command syntax.)
 
-If ``a`` or ``a-b`` or ``b`` are already bound, this will run the first command
-that matches, and the multi-key command will never be called. Intermediate keys
-can be remapped to ``ignore`` in order to avoid this issue. The maximum number
-of (non-modifier) keys for combinations is currently 4.
+Key matching
+------------
+
+mpv maintains key press history. If the current key completes one or more bound
+sequences (including single-key bindings), then mpv chooses the longest. If this
+sequence is bound to ``ignore``, then tracking continues as if nothing was
+matched. Otherwise, it triggers the command bound to this sequence and clears
+the key history.
+
+Note that while single-key bindings override builtin bindings, this is not the
+case with multi-key sequences. For example, a ``b-c`` sequence in input.conf
+would be overridden by a builtin binding ``b``. In this case, if you don't care
+about ``b``, you can bind it to ``ignore``.
+
+As a more complex example, if you want to bind both ``b`` and ``a-b-c``, then it
+won't work, because ``b`` would override ``a-b-c``. However, binding ``a-b`` to
+``ignore`` would allow that, because after ``a-b`` the longest match ``a-b`` is
+ignored, and a following ``c`` would trigger the sequence ``a-b-c`` while ``b``
+alone would still work.
 
 Key names
 ---------
@@ -672,6 +686,14 @@ Track Manipulation
     <visual-impaired>
 
         Marks the track as suitable for the visually impaired.
+
+    <forced>
+
+        Marks the track as forced.
+
+    <default>
+
+        Marks the track as default.
 
     <attached-picture> (only for ``video-add``)
 
@@ -1397,22 +1419,30 @@ Screenshot Commands
 
     Multiple flags are available (some can be combined with ``+``):
 
+    <video>
+        Save the video image in its original resolution, without OSD or
+        subtitles. This is the default when no flag is specified, and it does
+        not need to be explicitly added when combined with other flags.
+    <scaled>
+        Save the video image in the current playback resolution.
     <subtitles> (default)
-        Save the video image, in its original resolution, and with subtitles.
+        Save the video image with subtitles.
         Some video outputs may still include the OSD in the output under certain
         circumstances.
-    <video>
-        Like ``subtitles``, but typically without OSD or subtitles. The exact
-        behavior depends on the selected video output.
+    <osd>
+        Save the video image with OSD.
     <window>
-        Save the contents of the mpv window. Typically scaled, with OSD and
-        subtitles. The exact behavior depends on the selected video output.
+        Save the contents of the mpv window, with OSD and subtitles.
+        This is an alias of ``scaled+subtitles+osd``.
     <each-frame>
         Take a screenshot each frame. Issue this command again to stop taking
         screenshots. Note that you should disable frame-dropping when using
         this mode - or you might receive duplicate images in cases when a
         frame was dropped. This flag can be combined with the other flags,
         e.g. ``video+each-frame``.
+
+    The exact behaviors of all flags other than ``each-frame`` depend on the
+    selected video output.
 
     Older mpv versions required passing ``single`` and ``each-frame`` as
     second argument (and did not have flags). This syntax is still understood,
@@ -1440,9 +1470,10 @@ Screenshot Commands
     expansion as described in `Property Expansion`_.
 
 ``screenshot-raw [<flags> [<format>]]``
-    Return a screenshot in memory. This can be used only through the client
-    API. The MPV_FORMAT_NODE_MAP returned by this command has the ``w``, ``h``,
-    ``stride`` fields set to obvious contents.
+    Return a screenshot in memory. This can be used only through the client API
+    or from a script using ``mp.command_native``. The MPV_FORMAT_NODE_MAP
+    returned by this command has the ``w``, ``h``, ``stride`` fields set to
+    obvious contents.
 
     The ``format`` field is set to the format of the screenshot image data.
     This can be controlled by the ``format`` argument. The format can be one of
@@ -1862,10 +1893,10 @@ Hooks
 
 Hooks are synchronous events between player core and a script or similar. This
 applies to client API (including the Lua scripting interface). Normally,
-events are supposed to be asynchronous, and the hook API provides an awkward
-and obscure way to handle events that require stricter coordination. There are
-no API stability guarantees made. Not following the protocol exactly can make
-the player freeze randomly. Basically, nobody should use this API.
+events are supposed to be asynchronous, and the hook API provides a way to
+handle events that require stricter coordination. Not following the protocol
+exactly can make the player freeze. Use with caution, avoid if synchronous event
+handling is not required.
 
 The C API is described in the header files. The Lua API is described in the
 Lua section.
@@ -2667,7 +2698,7 @@ Property list
 
 ``hwdec-current``
     The current hardware decoding in use. If decoding is active, return one of
-    the values used by the ``hwdec`` option/property. ``no``/false indicates
+    the values used by the ``hwdec`` option/property. ``no`` indicates
     software decoding. If no decoder is loaded, the property is unavailable.
 
 ``hwdec-interop``
@@ -2795,6 +2826,18 @@ Property list
     ``video-params/avg-pq-y``
         Average PQ luminance of a frame, as reported by peak detection (in PQ, 0-1)
 
+    ``video-params/prim-red-x``, ``video-params/prim-red-y``
+        Red primary chromaticity coordinates, available only if differs from ``video-params/primaries``
+
+    ``video-params/prim-green-x``, ``video-params/prim-green-y``
+        Green primary chromaticity coordinates, available only if differs from ``video-params/primaries``
+
+    ``video-params/prim-blue-x``, ``video-params/prim-blue-y``
+        Blue primary chromaticity coordinates, available only if differs from ``video-params/primaries``
+
+    ``video-params/prim-white-x``, ``video-params/prim-white-y``
+        White point chromaticity coordinates, available only if differs from ``video-params/primaries``
+
     When querying the property with the client API using ``MPV_FORMAT_NODE``,
     or with Lua ``mp.get_property_native``, this will return a mpv_node with
     the following contents:
@@ -2830,6 +2873,14 @@ Property list
             "scene-max-b"       MPV_FORMAT_DOUBLE
             "max-pq-y"          MPV_FORMAT_DOUBLE
             "avg-pq-y"          MPV_FORMAT_DOUBLE
+            "prim-red-x"        MPV_FORMAT_DOUBLE
+            "prim-red-y"        MPV_FORMAT_DOUBLE
+            "prim-green-x"      MPV_FORMAT_DOUBLE
+            "prim-green-y"      MPV_FORMAT_DOUBLE
+            "prim-blue-x"       MPV_FORMAT_DOUBLE
+            "prim-blue-y"       MPV_FORMAT_DOUBLE
+            "prim-white-x"      MPV_FORMAT_DOUBLE
+            "prim-white-y"      MPV_FORMAT_DOUBLE
 
 ``dwidth``, ``dheight``
     Video display size. This is the video size after filters and aspect scaling
@@ -2916,7 +2967,7 @@ Property list
     Whether the window has focus. Might not be supported by all VOs.
 
 ``ambient-light``
-    Ambient lighting condition in lux. (macOS only)
+    Ambient lighting condition in lux. Only observable on macOS (macOS and Linux only)
 
 ``display-names``
     Names of the displays that the mpv window covers. On X11, these
@@ -3012,6 +3063,12 @@ Property list
     Read-only - mpv's window id. May not always be available, i.e due to window
     not being opened yet or not being supported by the VO.
 
+``display-swapchain``
+    Read-only - Direct3D 11 swapchain address. Returns an int64 type value
+    representing the memory address of the D3D11 swapchain. May not always be
+    available, i.e d3d11-output-mode is not set to ``composition`` or the VO
+    does not support it.
+
 ``mouse-pos``
     Read-only - last known mouse position, normalized to OSD dimensions.
 
@@ -3054,6 +3111,26 @@ Property list
                 "x"        MPV_FORMAT_INT64
                 "y"        MPV_FORMAT_INT64
                 "id"       MPV_FORMAT_INT64
+
+``tablet-pos``
+    Read-only - last known tablet tool (pen) position, normalized to OSD dimensions,
+    and tool state.
+
+    Has the following sub-properties:
+
+    ``tablet-pos/x``, ``tablet-pos/y``
+        Last known coordinates of the tablet tool.
+    ``tablet-pos/tool-in-proximity``
+        Boolean - whether a tablet tool is currently in proximity of the tablet
+        surface / hovers above the tablet surface.
+    ``tablet-pos/tool-tip``,
+        The state of the tablet tool tip, ``up`` or ``down.``
+    ``tablet-pos/tool-stylus-btn1``, ``tablet-pos/tool-stylus-btn2``, ``tablet-pos/tool-stylus-btn3``
+        The state of tablet tool side buttons, ``pressed`` or ``released``.
+    ``tablet-pos/pad-focus``
+        Boolean - whether a tablet pad is currently focused.
+    ``tablet-pos/pad-btns/N``
+        The state of the Nth tablet pad button, ``pressed`` or ``released``.
 
 ``sub-ass-extradata``
     The current ASS subtitle track's extradata. There is no formatting done.
@@ -3969,11 +4046,42 @@ Property list
 
 ``command-list``
     The list of input commands. This returns an array of maps, where each map
-    node represents a command. This map currently only has a single entry:
-    ``name`` for the name of the command. (This property is supposed to be a
-    replacement for ``--input-cmdlist``. The option dumps some more
-    information, but it's a valid feature request to extend this property if
-    needed.)
+    node represents a command. This map has the following entries:
+
+    ``name``
+        The name of the command.
+
+    ``vararg``
+        Whether the command accepts a variable number of arguments.
+
+    ``args``
+        An array of maps, where each map node represents an argument with the
+        following entries:
+
+        ``name``
+            The name of the argument.
+
+        ``type``
+            The name of the argument type, like ``String`` or ``Integer``.
+
+        ``optional``
+            Whether the argument is optional.
+
+    When querying the property with the client API using ``MPV_FORMAT_NODE``,
+    or with Lua ``mp.get_property_native``, this will return a mpv_node with
+    the following contents:
+
+    ::
+
+        MPV_FORMAT_NODE_ARRAY
+            MPV_FORMAT_NODE_MAP (for each command entry)
+                "name"    MPV_FORMAT_STRING
+                "vararg"  MPV_FORMAT_FLAG
+                "args"    MPV_FORMAT_NODE_ARRAY
+                    MPV_FORMAT_NODE_MAP
+                        "name"     MPV_FORMAT_STRING
+                        "type"     MPV_FORMAT_STRING
+                        "optional" MPV_FORMAT_FLAG
 
 ``input-bindings``
     The list of current input key bindings. This returns an array of maps,
@@ -4016,19 +4124,19 @@ Property list
     This property is read-only, and change notification is not supported.
 
 ``clipboard``
-    The clipboard contents, only works when native clipboard
-    (``--clipboard-enable``) is supported on the platform.
+    The clipboard contents. Only works when native clipboard is supported on the
+    platform.
     Depending on the platform, some sub-properties, writing to properties,
     or change notifications are not currently functional.
 
     This has a number of sub-properties:
 
     ``clipboard/text`` (RW)
-        The text content in the clipboard (Windows, Wayland and macOS only).
-        Writing to this property sets the text clipboard content (Windows only).
+        The text content in the clipboard.
+        Writing to this property sets the text clipboard content
 
-    ``clipboard/text-primary``
-        The text content in the primary selection (Wayland only).
+    ``clipboard/text-primary`` (RW)
+        The text content in the primary selection (X11 and Wayland only).
 
     .. note::
 
