@@ -53,14 +53,19 @@ extern const stream_info_t stream_info_ffmpeg_unsafe;
 extern const stream_info_t stream_info_avdevice;
 extern const stream_info_t stream_info_file;
 extern const stream_info_t stream_info_slice;
+extern const stream_info_t stream_info_aes_ctr;
 extern const stream_info_t stream_info_fd;
 extern const stream_info_t stream_info_ifo_dvdnav;
 extern const stream_info_t stream_info_dvdnav;
+extern const stream_info_t stream_info_ifo_dvda;
+extern const stream_info_t stream_info_dvda;
 extern const stream_info_t stream_info_bdmv_dir;
 extern const stream_info_t stream_info_bluray;
 extern const stream_info_t stream_info_edl;
 extern const stream_info_t stream_info_libarchive;
 extern const stream_info_t stream_info_cb;
+extern const stream_info_t stream_info_curl;
+extern const stream_info_t stream_info_env;
 
 static const stream_info_t *const stream_list[] = {
     &stream_info_mpv,
@@ -70,6 +75,10 @@ static const stream_info_t *const stream_list[] = {
     &stream_info_avdevice,
 #if HAVE_DVBIN
     &stream_info_dvb,
+#endif
+#if HAVE_DVDA
+    &stream_info_ifo_dvda,
+    &stream_info_dvda,
 #endif
 #if HAVE_DVDNAV
     &stream_info_ifo_dvdnav,
@@ -88,10 +97,15 @@ static const stream_info_t *const stream_list[] = {
     &stream_info_edl,
     &stream_info_file,
     &stream_info_slice,
+    &stream_info_aes_ctr,
     &stream_info_fd,
     &stream_info_cb,
+#if HAVE_LIBCURL
+    &stream_info_curl,
+#endif
     &stream_info_ffmpeg,
     &stream_info_ffmpeg_unsafe,
+    &stream_info_env,
 };
 
 // Because of guarantees documented on STREAM_BUFFER_SIZE.
@@ -156,7 +170,7 @@ void mp_url_unescape_inplace(char *url)
     }
 }
 
-char *mp_url_unescape(void *talloc_ctx, char *url)
+char *mp_url_unescape(void *talloc_ctx, const char *url)
 {
     char *unescaped = talloc_strdup(talloc_ctx, url);
     mp_url_unescape_inplace(unescaped);
@@ -356,6 +370,7 @@ static int stream_create_instance(const stream_info_t *sinfo,
         s->log = mp_log_new(s, s->global->log, sinfo->name);
     }
     s->info = sinfo;
+    s->autoprobed = !args->sinfo;
     s->cancel = args->cancel;
     s->url = talloc_strdup(s, url);
     s->path = talloc_strdup(s, path);
@@ -416,6 +431,8 @@ static int stream_create_instance(const stream_info_t *sinfo,
 
     if (s->mime_type)
         MP_VERBOSE(s, "Mime-type: '%s'\n", s->mime_type);
+    if (s->server_filename)
+        MP_VERBOSE(s, "Server filename: '%s'\n", s->server_filename);
 
     MP_DBG(s, "Stream opened successfully.\n");
 
@@ -537,7 +554,12 @@ static bool stream_read_more(struct stream *s, int forward)
     // Keep guaranteed seek-back.
     int buf_old = MPMIN(s->buf_cur - s->buf_start, s->requested_buffer_size / 2);
 
-    if (!stream_resize_buffer(s, buf_old + forward_avail, buf_old + forward))
+    // Never shrink the buffer here. That's stream_drop_buffers()'s job. Otherwise
+    // data fetched by earlier larger reads (e.g. demuxer probing) would be
+    // discarded, forcing redundant re-reads on backward seeks.
+    int new_size = MPMAX(buf_old + forward, s->buffer_mask + 1);
+
+    if (!stream_resize_buffer(s, buf_old + forward_avail, new_size))
         return false;
 
     int buf_alloc = s->buffer_mask + 1;
@@ -688,6 +710,15 @@ void stream_drop_buffers(stream_t *s)
     s->buf_start = s->buf_cur = s->buf_end = 0;
     s->eof = 0;
     stream_resize_buffer(s, 0, 0);
+}
+
+// Declare the current position the new logical start of the stream. Used for
+// streams whose content is replaced mid-stream (disc navigation jumps).
+// Discards buffered data and clears EOF.
+void stream_rebase_position(stream_t *s)
+{
+    stream_drop_buffers(s);
+    s->pos = 0;
 }
 
 // Seek function bypassing the local stream buffer.

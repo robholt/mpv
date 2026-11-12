@@ -61,6 +61,7 @@ struct vf_format_opts {
     int force_scaler;
     bool dovi;
     bool hdr10plus;
+    bool enhancement_layer;
     float min_luma;
     float max_luma;
     float max_cll;
@@ -79,7 +80,6 @@ static void set_params(struct vf_format_opts *p, struct mp_image_params *out,
         out->color.primaries = p->primaries;
     if (p->gamma) {
         enum pl_color_transfer in_gamma = p->gamma;
-        out->color.transfer = p->gamma;
         if (in_gamma != out->color.transfer) {
             // When changing the gamma function explicitly, also reset stuff
             // related to the gamma function since that information will almost
@@ -87,6 +87,7 @@ static void set_params(struct vf_format_opts *p, struct mp_image_params *out,
             out->color.hdr = (struct pl_hdr_metadata){0};
             out->light = MP_CSP_LIGHT_AUTO;
         }
+        out->color.transfer = p->gamma;
     }
     if (out->repr.sys != PL_COLOR_SYSTEM_DOLBYVISION) {
         out->primaries_orig = out->color.primaries;
@@ -99,7 +100,7 @@ static void set_params(struct vf_format_opts *p, struct mp_image_params *out,
         out->light = p->light;
     if (p->chroma_location)
         out->chroma_location = p->chroma_location;
-    if (p->stereo_in)
+    if (p->stereo_in >= 0)
         out->stereo3d = p->stereo_in;
     if (p->rotate >= 0)
         out->rotate = p->rotate;
@@ -185,6 +186,16 @@ static void vf_format_process(struct mp_filter *f)
                 .clm = get_side_data(img, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL),
                 .dhp = get_side_data(img, AV_FRAME_DATA_DYNAMIC_HDR_PLUS),
             });
+            // Tell the f_enhancement_pair filter to not inherit DV metadata
+            // from the EL.
+            img->params.no_dovi = true;
+        }
+
+        if (!priv->opts->enhancement_layer) {
+            // This is no-op, but just in case. f_enhancement_pair runs at the
+            // end of chain.
+            mp_image_unrefp(&img->enhancement_layer);
+            img->params.no_enhancement_layer = true;
         }
 
         if (!priv->opts->hdr10plus) {
@@ -192,6 +203,10 @@ static void vf_format_process(struct mp_filter *f)
                    sizeof(img->params.color.hdr.scene_max));
             img->params.color.hdr.scene_avg = 0;
             img->params.color.hdr.ootf = (struct pl_hdr_bezier){0};
+            if (img->params.repr.sys != PL_COLOR_SYSTEM_DOLBYVISION) {
+                img->params.color.hdr.max_pq_y = 0;
+                img->params.color.hdr.avg_pq_y = 0;
+            }
         }
 
         if (priv->opts->min_luma)
@@ -256,7 +271,7 @@ static const m_option_t vf_opts_fields[] = {
     {"primaries", OPT_CHOICE_C(primaries, pl_csp_prim_names)},
     {"gamma", OPT_CHOICE_C(gamma, pl_csp_trc_names)},
     {"transfer", OPT_ALIAS("gamma")},
-    {"sig-peak", OPT_FLOAT(sig_peak)},
+    {"sig-peak", OPT_FLOAT(sig_peak), .deprecation_message = "use max-luma"},
     {"light", OPT_CHOICE_C(light, mp_csp_light_names)},
     {"chroma-location", OPT_CHOICE_C(chroma_location, pl_chroma_names)},
     {"stereo-in", OPT_CHOICE_C(stereo_in, mp_stereo3d_names)},
@@ -269,6 +284,7 @@ static const m_option_t vf_opts_fields[] = {
     {"dar", OPT_DOUBLE(dar)},
     {"convert", OPT_BOOL(convert)},
     {"dolbyvision", OPT_BOOL(dovi)},
+    {"enhancement-layer", OPT_BOOL(enhancement_layer)},
     {"hdr10plus", OPT_BOOL(hdr10plus)},
     {"min-luma", OPT_FLOAT(min_luma), M_RANGE(0, 10000)},
     {"max-luma", OPT_FLOAT(max_luma), M_RANGE(0, 10000)},
@@ -288,8 +304,10 @@ const struct mp_user_filter_entry vf_format = {
         .name = "format",
         .priv_size = sizeof(OPT_BASE_STRUCT),
         .priv_defaults = &(const OPT_BASE_STRUCT){
+            .stereo_in = -1,
             .rotate = -1,
             .dovi = true,
+            .enhancement_layer = true,
             .hdr10plus = true,
             .film_grain = true,
         },

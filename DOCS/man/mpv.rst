@@ -174,6 +174,15 @@ z and Z
 l
     Set/clear A-B loop points. See ``ab-loop`` command for details.
 
+Ctrl+m
+    Jump to the disc menu when playing a DVD or Blu-ray (see the ``discnav``
+    command). While a menu with a button highlight is on screen, the arrow
+    keys, ENTER, ESC/BACKSPACE and the mouse control the menu instead of
+    their usual functions.
+
+Ctrl+M
+    Show or hide the Blu-ray popup menu.
+
 L
     Toggle infinite looping.
 
@@ -257,6 +266,10 @@ Ctrl+v
     currently playing, it is played immediately. Only works on platforms that
     support the ``clipboard`` property.
 
+Ctrl+r
+    Reload the current file, preserving the time position and any changed
+    option. Empties any network cache.
+
 i and I
     Show/toggle an overlay displaying statistics about the currently playing
     file such as codec, framerate, number of dropped frames and so on. See
@@ -332,8 +345,10 @@ g-e
     Select an MKV edition or DVD/Blu-ray title.
 
 g-l
-    Select a subtitle line to seek to. This currently requires ``ffmpeg`` in
-    ``PATH``, or in the same folder as mpv on Windows.
+    Select a subtitle line to seek to.
+
+g-L
+    Select a secondary subtitle line to seek to.
 
 g-d
     Select an audio device.
@@ -351,10 +366,13 @@ g-b
 g-r
     Show the values of all properties.
 
-g-m, MENU, Ctrl+p
+g-m, Ctrl+p
     Show a menu with miscellaneous entries.
 
 See `SELECT`_ for more information.
+
+MENU, Shift+F10
+    Show the context menu (see `CONTEXT MENU`_).
 
 (The following keys are valid if you have a keyboard with multimedia keys.)
 
@@ -384,7 +402,7 @@ Left double click
     Toggle fullscreen on/off.
 
 Right click
-    Toggle pause on/off.
+    Show the context menu (see `CONTEXT MENU`_).
 
 Forward/Back button
     Skip to next/previous entry in playlist.
@@ -398,16 +416,6 @@ Wheel left/right
 Ctrl+Wheel up/down
     Change video zoom keeping the part of the video hovered by the cursor under
     it.
-
-Context Menu
--------------
-
-Context Menu is a menu that pops up on the video window on user interaction
-(mouse right click, etc.).
-
-To use this feature, you need to fill the ``menu-data`` property with menu
-definition data, and add a keybinding to run the ``context-menu`` command,
-which can be done with a user script.
 
 USAGE
 =====
@@ -443,12 +451,10 @@ because ``--fs`` is a flag option that requires no parameter. If an option
 changes and its parameter becomes optional, then a command line using the
 alternative syntax will break.
 
-Until mpv 0.31.0, there was no difference whether an option started with ``--``
-or a single ``-``. Newer mpv releases strictly expect that you pass the option
-value after a ``=``. For example, before ``mpv --log-file f.txt`` would write
-a log to ``f.txt``, but now this command line fails, as ``--log-file`` expects
-an option value, and ``f.txt`` is simply considered a normal file to be played
-(as in ``mpv f.txt``).
+For options starting with ``--``, mpv expects that you pass the option value
+after a ``=``. For example, ``mpv --log-file f.txt`` will fail, as
+``--log-file`` expects an option value, and ``f.txt`` is simply considered a
+normal file to be played (as in ``mpv f.txt``).
 
 The future plan is that ``-option value`` will not work anymore, and options
 with a single ``-`` behave the same as ``--`` options.
@@ -487,9 +493,9 @@ quotes.
 
 The ``[...]`` form of quotes wraps everything between ``[`` and ``]``. It's
 useful with shells that don't interpret these characters in the middle of
-an argument (like bash). These quotes are balanced (since mpv 0.9.0): the ``[``
-and ``]`` nest, and the quote terminates on the last ``]`` that has no matching
-``[`` within the string. (For example, ``[a[b]c]`` results in ``a[b]c``.)
+an argument (like bash). These quotes are balanced: the ``[`` and ``]`` nest,
+and the quote terminates on the last ``]`` that has no matching ``[`` within the
+string. (For example, ``[a[b]c]`` results in ``a[b]c``.)
 
 The fixed-length quoting syntax is intended for use with external
 scripts and programs.
@@ -527,6 +533,13 @@ interpreted as protocol prefix, even though ``://`` can be part of a legal
 UNIX path. To avoid problems with arbitrary paths, you should be sure that
 absolute paths passed to mpv start with ``/``, and prefix relative paths with
 ``./``.
+
+URLs that are passed to mpv should be percent-encoded for it to work reliably.
+There are some heuristics in place that tries to automatically do it, but these
+heuristics are not foolproof. For example, in order to play a file literally
+named ``foo%20.mp4``, using ``http://localhost/foo%20.mp4`` without any
+percent-encoding will not work. Percent-encoding it as
+``http://localhost/foo%2520.mp4`` will work as expected.
 
 Using the ``file://`` pseudo-protocol is discouraged, because it involves
 strange URL unescaping rules.
@@ -618,7 +631,8 @@ reset when a new file is played.
 
 Sometimes, it is useful to change options per-file. This can be achieved by
 adding the special per-file markers ``--{`` and ``--}``. (Note that you must
-escape these on some shells.) Example::
+escape these on some shells.) When a file is loaded, the associated per-file
+options are applied and marked as file-local options. Example::
 
     mpv --a file1.mkv --b --\{ --c file2.mkv --d file3.mkv --e --\} file4.mkv --f
 
@@ -633,7 +647,8 @@ file4.mkv       ``--a --b --f``
 
 Additionally, any file-local option changed at runtime is reset when the current
 file stops playing. If option ``--c`` is changed during playback of
-``file2.mkv``, it is reset when advancing to ``file3.mkv``. This only affects
+``file2.mkv``, it is reset when advancing to ``file3.mkv``, or when restarting
+the current file with the ``playlist-play-index`` command. This only affects
 file-local options. The option ``--a`` is never reset here.
 
 
@@ -698,8 +713,6 @@ If you want to pass a value without interpreting it for escapes or ``,``, it is
 recommended to use the ``-append`` variant. When using libmpv, prefer using
 ``MPV_FORMAT_NODE_MAP``; when using a scripting backend or the JSON IPC, use an
 appropriate structured data type.
-
-Prior to mpv 0.33, ``:`` was also recognized as separator by ``-set``.
 
 Object settings list options
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -814,6 +827,8 @@ file-specific configuration is loaded from ``~/.config/mpv``. In addition, the
 ``--use-filedir-conf`` option enables directory-specific configuration files.
 For this, mpv first tries to load a mpv.conf from the same directory
 as the file played and then tries to load any file-specific configuration.
+The options loaded in this way are marked as file-local, which are reset when
+the current file stops playing.
 
 
 Profiles
@@ -858,7 +873,7 @@ or at runtime with the ``apply-profile <name>`` command.
         [network]
         demuxer-max-back-bytes=512MiB
         # reference a builtin profile
-        profile=fast
+        profile=low-latency
 
 Runtime profiles
 ----------------
@@ -1264,6 +1279,9 @@ modified after playback began, for example the volume and selected audio/subtitl
 and restores their values the next time the file is played. Which options are
 saved can be configured with the ``--watch-later-options`` option.
 
+The options applied in this way are marked as file-local, and they are reset when
+playback of the file associated with it stops.
+
 When playing multiple playlist entries, mpv checks if one them has a resume
 config file associated, and if it finds one it restarts playback from it. For
 example, if you use ``quit-watch-later`` on the 5th episode of a show, and
@@ -1318,8 +1336,12 @@ PROTOCOLS
     Play a Blu-ray disc. Since libbluray 1.0.1, you can read from ISO files
     by passing them to ``--bluray-device``.
 
+    A Blu-ray ``.iso`` image passed directly (e.g. ``mpv disc.iso``) is also
+    detected and opened.
+
     ``title`` can be: ``longest`` or ``first`` (selects the default
-    playlist); ``mpls/<number>`` (selects <number>.mpls playlist);
+    playlist); ``menu`` (starts in the disc menu, see ``--disc-menu`` and the
+    ``discnav`` command); ``mpls/<number>`` (selects <number>.mpls playlist);
     ``<number>`` (select playlist with the same index). mpv will list
     the available playlists on loading.
 
@@ -1327,12 +1349,31 @@ PROTOCOLS
 
 ``dvd://[title][/device]`` ``--dvd-device=PATH``
 
-    Play a DVD. DVD menus are not supported. If no title is given, the longest
-    title is auto-selected. Without ``--dvd-device``, it will probably try
-    to open an actual optical drive, if available and implemented for the OS.
+    Play a DVD. If no title is given, the longest title is auto-selected.
+    ``title`` can also be ``menu`` to start in the disc menu (see
+    ``--disc-menu`` and the ``discnav`` command). Without ``--dvd-device``,
+    it will probably try to open an actual optical drive, if available and
+    implemented for the OS.
+
+    A DVD-Video ``.iso`` image passed directly (e.g. ``mpv disc.iso``) is also
+    detected and opened.
 
     ``dvdnav://`` is an old alias for ``dvd://`` and does exactly the same
     thing.
+
+``dvda://[title][/device]`` ``--dvda-device=PATH``
+
+    Play the AUDIO_TS zone of a DVD-Audio disc. Titles correspond to the
+    disc's audio groups, tracks are exposed as chapters. If no title is
+    given, the longest title is auto-selected. Menus are not supported.
+
+    Still images (ASVS), such as cover art or booklet pages a disc associates
+    with its tracks, are exposed as a video track and shown by default. Can be
+    disabled with ``--vid=no``.
+
+    A DVD-Audio ``.iso`` image passed directly (e.g. ``mpv disc.iso``) is also
+    detected and opened. For hybrid discs, the DVD-Audio zone is preferred over
+    the DVD-Video zone.
 
 ``dvb://[cardnumber@]channel`` ``--dvbin-...``
 
@@ -1439,22 +1480,49 @@ PROTOCOLS
 
     Only works with seekable streams.
 
-    Examples::
+    .. admonition:: Example
 
-      mpv slice://1g-2g@cap.ts
+        ::
 
-      This starts reading from cap.ts after seeking 1 GiB, then
-      reads until reaching 2 GiB or end of file.
+            mpv slice://1g-2g@cap.ts
 
-      mpv slice://1g-+2g@cap.ts
+        This starts reading from cap.ts after seeking 1 GiB, then
+        reads until reaching 2 GiB or end of file.
 
-      This starts reading from cap.ts after seeking 1 GiB, then
-      reads until reaching 3 GiB or end of file.
+        ::
 
-      mpv slice://100m@appending://cap.ts
+            mpv slice://1g-+2g@cap.ts
 
-      This starts reading from cap.ts after seeking 100MiB, then
-      reads until end of file.
+        This starts reading from cap.ts after seeking 1 GiB, then
+        reads until reaching 3 GiB or end of file.
+
+        ::
+
+            mpv slice://100m@appending://cap.ts
+
+        This starts reading from cap.ts after seeking 100MiB, then
+        reads until end of file.
+
+``aes-ctr://key:iv@URL``
+
+    Decrypt a stream that was encrypted as a whole with AES in CTR mode.
+
+    ``key`` is the AES key as 32, 48 or 64 hex digits. ``iv`` is the initial
+    counter block as 32 hex digits. The counter block is incremented as a
+    128 bit big endian number, which is what ``openssl enc -aes-128-ctr``
+    does.
+
+    Seeking works if the stream behind ``URL`` is seekable.
+
+    .. admonition:: Example
+
+        ::
+
+            mpv aes-ctr://000102030405060708090a0b0c0d0e0f:f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff@video.mkv.enc
+
+        This plays a file that was encrypted with
+        ``openssl enc -aes-128-ctr -K 000102030405060708090a0b0c0d0e0f
+        -iv f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff -in video.mkv -out video.mkv.enc``.
 
 ``null://``
 
@@ -1469,6 +1537,24 @@ PROTOCOLS
 ``hex://data``
 
     Like ``memory://``, but the string is interpreted as hexdump.
+
+``archive://[ARCHIVE PATH]|[FILE PATH IN ARCHIVE]``
+
+    Open a file at the specified path inside an archive. Requires libarchive
+    feature enabled. The archive path must have all ``%`` and ``|`` characters
+    URL escaped. The file path should not be URL escaped.
+
+    .. admonition:: Example
+
+        ::
+
+            mpv "archive://file.zip|video.mkv"
+
+        This will play ``video.mkv`` in the archive file ``file.zip``.
+
+``env://variable``
+
+    Read the environment variable ``variable`` as source data.
 
 PSEUDO GUI MODE
 ===============
@@ -1498,7 +1584,7 @@ The profile is currently defined as follows:
     [builtin-pseudo-gui]
     terminal=no
     force-window=yes
-    idle=once
+    idle=yes
     screenshot-directory=~~desktop/
 
 The ``pseudo-gui`` profile exists for compatibility. The options in the
@@ -1514,10 +1600,15 @@ works like in older mpv releases:
 .. warning::
 
     Currently, you can extend the ``pseudo-gui`` profile in the config file the
-    normal way. This is deprecated. In future mpv releases, the behavior might
-    change, and not apply your additional settings, and/or use a different
-    profile name.
+    normal way. This is deprecated and will be removed in future mpv releases.
 
+    As an alternative, a conditional autoprofile can be used instead:
+
+        ::
+
+            [gui]
+            profile-cond=p["player-operation-mode"]=="pseudo-gui"
+            idle=once
 
 .. include:: options.rst
 

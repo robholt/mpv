@@ -35,6 +35,7 @@ const struct mp_user_filter_entry *af_list[] = {
     &af_lavfi_bridge,
     &af_scaletempo,
     &af_scaletempo2,
+    &af_lavfi_tempo,
     &af_format,
 #if HAVE_RUBBERBAND
     &af_rubberband,
@@ -99,6 +100,9 @@ const struct mp_user_filter_entry *vf_list[] = {
 #endif
 #if HAVE_D3D_HWACCEL
     &vf_d3d11vpp,
+#endif
+#if HAVE_AMF
+    &vf_amf_frc,
 #endif
 #if (HAVE_GL && HAVE_EGL) || HAVE_VULKAN
     &vf_gpu,

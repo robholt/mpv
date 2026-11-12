@@ -66,6 +66,14 @@ static int hwdec_opt_help(struct mp_log *log, const m_option_t *opt,
                           struct bstr name);
 
 #define HWDEC_DELAY_QUEUE_COUNT 2
+#define HWDEC_WAIT_KEYFRAME_COUNT 96
+
+// Fallback number of extra surfaces for fixed-size hw frame pools, if the
+// actual requirement cannot be determined.
+#define HWDEC_EXTRA_FRAMES 6
+
+// Surfaces referenced outside of libavcodec on top of what the VO declares
+#define HWDEC_EXTRA_INFLIGHT_FRAMES 3
 
 #define OPT_BASE_STRUCT struct vd_lavc_params
 
@@ -150,8 +158,8 @@ const struct m_sub_options hwdec_conf = {
             .flags = M_OPT_OPTIONAL_PARAM | M_OPT_ALLOW_NO | UPDATE_HWDEC},
         {"hwdec-codecs", OPT_STRING(hwdec_codecs),
             .flags = UPDATE_HWDEC},
-        {"hwdec-extra-frames", OPT_INT(hwdec_extra_frames), M_RANGE(0, 256),
-            .flags = UPDATE_VD},
+        {"hwdec-extra-frames", OPT_CHOICE(hwdec_extra_frames, {"auto", -1}),
+            M_RANGE(0, 256), .flags = UPDATE_VD},
         {"hwdec-image-format", OPT_IMAGEFORMAT(hwdec_image_format),
             .flags = UPDATE_VO},
         {"hwdec-software-fallback", OPT_CHOICE(software_fallback,
@@ -165,12 +173,8 @@ const struct m_sub_options hwdec_conf = {
     .defaults = &(const struct hwdec_opts){
         .software_fallback = 3,
         .hwdec_api = (char *[]){"no", NULL,},
-        .hwdec_codecs = "h264,vc1,hevc,vp8,vp9,av1,prores,prores_raw,ffv1,dpx",
-        // Maximum number of surfaces the player wants to buffer. This number
-        // might require adjustment depending on whatever the player does;
-        // for example, if vo_gpu increases the number of reference surfaces for
-        // interpolation, this value has to be increased too.
-        .hwdec_extra_frames = 6,
+        .hwdec_codecs = "h264,vc1,hevc,vp8,vp9,av1,prores,prores_raw,ffv1,dpx,apv",
+        .hwdec_extra_frames = -1,
         .hwdec_threads = 4,
     },
 };
@@ -213,9 +217,11 @@ typedef struct lavc_ctx {
     bool hwdec_failed;
     bool hwdec_notified;
     bool force_eof;
+    int wait_for_keyframe; // max number of frames to wait for keyframe after reset
 
     bool intra_only;
     int framedrop_flags;
+    int extra_hw_frames_hint; // VDCTRL_SET_EXTRA_HW_FRAMES
 
     bool hw_probing;
     struct demux_packet **sent_packets;
@@ -231,6 +237,7 @@ typedef struct lavc_ctx {
     // From VO
     struct vo *vo;
     struct mp_hwdec_devices *hwdec_devs;
+    bool force_swdec;
 
     // Wrapped AVHWDeviceContext* used for decoding.
     AVBufferRef *hwdec_dev;
@@ -264,7 +271,7 @@ struct autoprobe_info {
 // Things not included in this list will be tried last, in random order.
 const struct autoprobe_info hwdec_autoprobe_info[] = {
     {"d3d11va",         HWDEC_FLAG_AUTO | HWDEC_FLAG_WHITELIST},
-    {"vulkan",          HWDEC_FLAG_AUTO | HWDEC_FLAG_WHITELIST},
+    {"vulkan",          HWDEC_FLAG_AUTO},
     {"dxva2",           HWDEC_FLAG_AUTO},
     {"nvdec",           HWDEC_FLAG_AUTO | HWDEC_FLAG_WHITELIST},
     {"vaapi",           HWDEC_FLAG_AUTO | HWDEC_FLAG_WHITELIST},
@@ -273,7 +280,7 @@ const struct autoprobe_info hwdec_autoprobe_info[] = {
     {"mediacodec",      HWDEC_FLAG_AUTO},
     {"videotoolbox",    HWDEC_FLAG_AUTO | HWDEC_FLAG_WHITELIST},
     {"d3d11va-copy",    HWDEC_FLAG_AUTO | HWDEC_FLAG_WHITELIST},
-    {"vulkan-copy",     HWDEC_FLAG_AUTO | HWDEC_FLAG_WHITELIST},
+    {"vulkan-copy",     HWDEC_FLAG_AUTO},
     {"dxva2-copy",      HWDEC_FLAG_AUTO | HWDEC_FLAG_WHITELIST},
     {"nvdec-copy",      HWDEC_FLAG_AUTO | HWDEC_FLAG_WHITELIST},
     {"vaapi-copy",      HWDEC_FLAG_AUTO | HWDEC_FLAG_WHITELIST},
@@ -528,6 +535,9 @@ static void select_and_set_hwdec(struct mp_filter *vd)
             MP_VERBOSE(vd, "Not trying to use hardware decoding: codec %s is not "
                     "on whitelist.\n", codec);
             break;
+        } else if (ctx->force_swdec) {
+            MP_VERBOSE(vd, "Not trying to use hardware decoding: disallowed\n");
+            break;
         } else {
             bool hwdec_name_supported = false;  // relevant only if !hwdec_auto
             for (int n = 0; n < num_hwdecs; n++) {
@@ -583,6 +593,14 @@ static void select_and_set_hwdec(struct mp_filter *vd)
 
                     const struct hwcontext_fns *fns =
                                 hwdec_get_hwcontext_fns(hwdec->lavc_device);
+                    if (fns && fns->is_codec_allowed &&
+                        !fns->is_codec_allowed(ctx->hwdec_dev, hwdec->codec->id))
+                    {
+                        MP_WARN(vd, "Hardware decoding of '%s' is disabled on this "
+                                    "device.\n", codec);
+                        av_buffer_unref(&ctx->hwdec_dev);
+                        continue;
+                    }
                     if (fns && fns->is_emulated && fns->is_emulated(ctx->hwdec_dev)) {
                         if (hwdec_auto) {
                             MP_VERBOSE(vd, "Not using emulated API.\n");
@@ -699,6 +717,11 @@ static void reinit(struct mp_filter *vd)
             force_fallback(vd);
         } while (!ctx->avctx);
     }
+
+    // Wait for the first keyframe after reinit to ensure the decoder state is
+    // valid and to avoid decoding errors that could cause hwdec to fail and
+    // fall back immediately after a reinit.
+    ctx->wait_for_keyframe = ctx->use_hwdec ? HWDEC_WAIT_KEYFRAME_COUNT : 0;
 }
 
 static void init_avctx(struct mp_filter *vd)
@@ -849,6 +872,7 @@ static void init_avctx(struct mp_filter *vd)
         MP_ERR(vd, "Frame size too big %" PRIu32 "x%" PRIu32 ".\n", avctx->width, avctx->height);
         goto error;
     }
+    avctx->max_pixels = 2048 * 2048;
 #endif
 
     /* open it */
@@ -882,6 +906,9 @@ static void reset_avctx(struct mp_filter *vd)
         avcodec_flush_buffers(ctx->avctx);
     ctx->flushing = false;
     ctx->hwdec_request_reinit = false;
+    // Wait for the first keyframe after reset to ensure the decoder state is
+    // valid. Seeking should already jump to a keyframe, so this is safe.
+    ctx->wait_for_keyframe = ctx->use_hwdec ? HWDEC_WAIT_KEYFRAME_COUNT : 0;
 }
 
 static void flush_all(struct mp_filter *vd)
@@ -924,6 +951,28 @@ static void uninit_avctx(struct mp_filter *vd)
     ctx->use_hwdec = false;
 }
 
+// Number of extra surfaces to allocate on top of what libavcodec computed
+// for the codec itself, i.e. how many frames the rest of the player may hold
+// on to at any given time.
+static int hwdec_get_extra_frames(vd_ffmpeg_ctx *ctx)
+{
+    // Structural surface requirement of the player (e.g. the enhancement-layer
+    // pairing queue); applies on top of any user override.
+    int hint = ctx->extra_hw_frames_hint;
+
+    int extra = ctx->hwdec_opts->hwdec_extra_frames;
+    if (extra >= 0)
+        return extra + hint;
+
+    extra = HWDEC_EXTRA_FRAMES;
+    // With native hwdec, every frame queued towards or retained by the VO
+    // pins a surface from the fixed pool. Copying wrappers release surfaces
+    // right after download, the fallback is enough for them.
+    if (!ctx->hwdec.copying && ctx->vo)
+        extra = MPMAX(extra, vo_get_num_frame_refs(ctx->vo) + HWDEC_EXTRA_INFLIGHT_FRAMES);
+    return extra + hint;
+}
+
 static int init_generic_hwaccel(struct AVCodecContext *avctx, enum AVPixelFormat hw_fmt)
 {
     struct mp_filter *vd = avctx->opaque;
@@ -953,7 +1002,7 @@ static int init_generic_hwaccel(struct AVCodecContext *avctx, enum AVPixelFormat
     // 1 surface is already included by libavcodec. The field is 0 if the
     // hwaccel supports dynamic surface allocation.
     if (new_fctx->initial_pool_size)
-        new_fctx->initial_pool_size += ctx->hwdec_opts->hwdec_extra_frames - 1;
+        new_fctx->initial_pool_size += hwdec_get_extra_frames(ctx) - 1;
 
     const struct hwcontext_fns *fns =
         hwdec_get_hwcontext_fns(new_fctx->device_ctx->type);
@@ -977,6 +1026,11 @@ static int init_generic_hwaccel(struct AVCodecContext *avctx, enum AVPixelFormat
         if (av_hwframe_ctx_init(new_frames_ctx) < 0) {
             MP_ERR(ctx, "Failed to allocate hw frames.\n");
             goto error;
+        }
+
+        if (new_fctx->initial_pool_size) {
+            MP_VERBOSE(ctx, "Allocated a fixed pool of %d hw surfaces.\n",
+                       new_fctx->initial_pool_size);
         }
 
         ctx->cached_hw_frames_ctx = new_frames_ctx;
@@ -1180,6 +1234,15 @@ static int send_packet(struct mp_filter *vd, struct demux_packet *pkt)
 
     prepare_decoding(vd);
 
+    if (ctx->wait_for_keyframe > 0 && pkt) {
+        if (!pkt->keyframe && !ctx->intra_only) {
+            MP_DBG(vd, "Waiting for keyframe after reinit (dropping frame).\n");
+            ctx->wait_for_keyframe--;
+            return 0;
+        }
+        ctx->wait_for_keyframe = 0;
+    }
+
     if (avctx->skip_frame == AVDISCARD_ALL)
         return 0;
 
@@ -1365,6 +1428,9 @@ static int control(struct mp_filter *vd, enum dec_ctrl cmd, void *arg)
     case VDCTRL_SET_FRAMEDROP:
         ctx->framedrop_flags = *(int *)arg;
         return CONTROL_TRUE;
+    case VDCTRL_SET_EXTRA_HW_FRAMES:
+        ctx->extra_hw_frames_hint = *(int *)arg;
+        return CONTROL_TRUE;
     case VDCTRL_CHECK_FORCED_EOF: {
         *(bool *)arg = ctx->force_eof;
         return CONTROL_TRUE;
@@ -1463,6 +1529,7 @@ static struct mp_decoder *create(struct mp_filter *parent,
     if (info) {
         ctx->hwdec_devs = info->hwdec_devs;
         ctx->vo = info->dr_vo;
+        ctx->force_swdec = info->force_swdec;
     }
 
     reinit(vd);

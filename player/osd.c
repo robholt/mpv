@@ -108,7 +108,9 @@ static void term_osd_update_title(struct MPContext *mpctx)
         return;
 
     char *s = mp_property_expand_escaped_string(mpctx, mpctx->opts->term_title);
-    if (bstr_equals(bstr0(s), bstr0(mpctx->term_osd_title))) {
+    bstr title = bstr0(s);
+    mp_msg_sanitize(&title, false);
+    if (bstr_equals(title, bstr0(mpctx->term_osd_title))) {
         talloc_free(s);
         return;
     }
@@ -180,7 +182,7 @@ static char *get_term_status_msg(struct MPContext *mpctx)
     struct MPOpts *opts = mpctx->opts;
 
     if (opts->status_msg)
-        return mp_property_expand_escaped_string(mpctx, opts->status_msg);
+        return mp_expand_term_status_msg(mpctx);
 
     char *line = NULL;
 

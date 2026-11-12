@@ -22,6 +22,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+
 #include <mpv/client.h>
 
 #include "osdep/compiler.h"
@@ -54,11 +60,27 @@ static inline void fail(const char *fmt, ...)
 
 static inline void exit_cleanup(void)
 {
-    mpv_destroy(ctx);
+    mpv_terminate_destroy(ctx);
     ctx = NULL;
 }
 
-static inline mpv_event *wrap_wait_event(void)
+// Return the path for a temporary file.
+static inline const char *temp_path(void)
+{
+    static char path[] = "./testout.XXXXXX";
+#ifdef _WIN32
+    if (!_mktemp(path) || !*path)
+        fail("tmpfile failed\n");
+#else
+    int fd = mkstemp(path);
+    if (fd == -1)
+        fail("tmpfile failed\n");
+    close(fd);
+#endif
+    return path;
+}
+
+static inline mpv_event *wait_event(bool fail_on_error)
 {
     while (1) {
         mpv_event *ev = mpv_wait_event(ctx, 1);
@@ -68,12 +90,17 @@ static inline mpv_event *wrap_wait_event(void)
         if (ev->event_id == MPV_EVENT_LOG_MESSAGE) {
             mpv_event_log_message *msg = (mpv_event_log_message*)ev->data;
             printf("[%s:%s] %s", msg->prefix, msg->level, msg->text);
-            if (msg->log_level <= MPV_LOG_LEVEL_ERROR)
+            if (fail_on_error && msg->log_level <= MPV_LOG_LEVEL_ERROR)
                 fail("error was logged");
         } else {
             return ev;
         }
     }
+}
+
+static inline mpv_event *wrap_wait_event(void)
+{
+    return wait_event(true);
 }
 
 static inline void command_impl(const char *file, int line, const char *cmd[])
@@ -126,7 +153,7 @@ MP_UNUSED static void check_double(const char *property, double expect)
     double result_double;
     get_property(property, MPV_FORMAT_DOUBLE, &result_double);
     if (expect != result_double)
-        fail("Double: expected '%f' but got '%f'!\n", expect, result_double);
+        fail("%s (double): expected '%f' but got '%f'!\n", property, expect, result_double);
 }
 
 MP_UNUSED static void check_flag(const char *property, int expect)
@@ -134,7 +161,7 @@ MP_UNUSED static void check_flag(const char *property, int expect)
     int result_flag;
     get_property(property, MPV_FORMAT_FLAG, &result_flag);
     if (expect != result_flag)
-        fail("Flag: expected '%d' but got '%d'!\n", expect, result_flag);
+        fail("%s (flag): expected '%d' but got '%d'!\n", property, expect, result_flag);
 }
 
 MP_UNUSED static void check_int(const char *property, int64_t expect)
@@ -142,7 +169,7 @@ MP_UNUSED static void check_int(const char *property, int64_t expect)
     int64_t result_int;
     get_property(property, MPV_FORMAT_INT64, &result_int);
     if (expect != result_int)
-        fail("Int: expected '%" PRId64 "' but got '%" PRId64 "'!\n", expect, result_int);
+        fail("%s (int): expected '%" PRId64 "' but got '%" PRId64 "'!\n", property, expect, result_int);
 }
 
 MP_UNUSED static inline void check_string(const char *property, const char *expect)
@@ -150,7 +177,7 @@ MP_UNUSED static inline void check_string(const char *property, const char *expe
     char *result_string;
     get_property(property, MPV_FORMAT_STRING, &result_string);
     if (strcmp(expect, result_string) != 0)
-        fail("String: expected '%s' but got '%s'!\n", expect, result_string);
+        fail("%s (string): expected '%s' but got '%s'!\n", property, expect, result_string);
     mpv_free(result_string);
 }
 

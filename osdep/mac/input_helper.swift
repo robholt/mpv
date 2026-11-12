@@ -97,7 +97,10 @@ class InputHelper: NSObject {
 
     @objc func processKey(event: NSEvent) -> Bool {
         if event.type != .keyDown && event.type != .keyUp { return false }
-        if NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false || event.isARepeat { return true }
+        if NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false ||
+           (event.type == .keyDown && event.isARepeat) {
+           return true
+        }
 
         return lock.withLock {
             let mpkey = lookup_keymap_table(keymap, Int32(event.keyCode))
@@ -249,24 +252,34 @@ class InputHelper: NSObject {
         return String(utf16CodeUnits: chars, count: length)
     }
 
-    @objc func open(files: [String], append: Bool = false) {
+    func open(files: [String]) {
+        for (index, file) in files.enumerated() {
+            let action = index > 0 ? "append" :
+                (NSEvent.modifierFlags.contains(.shift) ? "append" : "replace")
+            let fileClean = cleanPath(file: file)
+
+            command("loadfile \"\(fileClean)\" \(action)")
+        }
+    }
+
+    @objc func handleDnd(files: [String], append: Bool = false) {
         lock.withLock {
             guard let input = input else { return }
-            if (option?.vo.drag_and_drop ?? -1) == -2 { return }
 
             var action = DND_APPEND
             if !append {
                 action = NSEvent.modifierFlags.contains(.shift) ? DND_APPEND : DND_REPLACE
-                if (option?.vo.drag_and_drop ?? -1) >= 0 {
-                    action = mp_dnd_action(UInt32(option?.vo.drag_and_drop ?? Int32(DND_REPLACE.rawValue)))
-                }
             }
 
-            let filesClean = files.map { $0.hasPrefix("file:///.file/id=") ? (URL(string: $0)?.path ?? $0) : $0 }
+            let filesClean = files.map { cleanPath(file: $0) }
             var filesPtr = filesClean.map { UnsafeMutablePointer<CChar>(strdup($0)) }
-            mp_event_drop_files(input, Int32(files.count), &filesPtr, action)
+            mp_input_drop_files(input, Int32(files.count), &filesPtr, action)
             for charPtr in filesPtr { free(UnsafeMutablePointer(mutating: charPtr)) }
         }
+    }
+
+    private func cleanPath(file: String) -> String {
+        return file.hasPrefix("file:///.file/id=") ? (URL(string: file)?.path ?? file) : file
     }
 
     private func useAltGr() -> Bool {

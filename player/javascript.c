@@ -35,6 +35,7 @@
 #include "input/input.h"
 #include "options/path.h"
 #include "misc/bstr.h"
+#include "misc/codepoint_width.h"
 #include "osdep/timer.h"
 #include "osdep/threads.h"
 #include "stream/stream.h"
@@ -705,7 +706,7 @@ static void script_get_property_bool(js_State *J)
 static bool same_as_int64(double d)
 {
     // The range checks also validly filter inf and nan, so behavior is defined
-    return d >= INT64_MIN && d <= (double) INT64_MAX && d == (int64_t)d;
+    return d >= -0x1p63 && d < 0x1p63 && d == (int64_t)d;
 }
 
 // args: name, number
@@ -824,7 +825,7 @@ static void script_input_set_section_mouse_area(js_State *J)
     push_success(J);
 }
 
-// args: time-in-ms [,format-string]
+// args: time-in-seconds [,format-string]
 static void script_format_time(js_State *J, void *af)
 {
     double t = js_tonumber(J, 1);
@@ -1000,6 +1001,15 @@ static void script_get_env_list(js_State *J)
     }
 }
 
+// args: text
+static void script_terminal_display_width(js_State *J)
+{
+    bstr text = bstr0(js_tostring(J, 1));
+    const unsigned char *cut_pos;
+    int width = term_disp_width(text, INT_MAX, &cut_pos);
+    js_pushnumber(J, width);
+}
+
 // args: as-filename, content-string, returns the compiled result as a function
 static void script_compile_js(js_State *J)
 {
@@ -1079,7 +1089,7 @@ static int jsL_checkint(js_State *J, int idx)
 static uint64_t jsL_checkuint64(js_State *J, int idx)
 {
     double d = js_tonumber(J, idx);
-    if (!(d >= 0 && d <= (double) UINT64_MAX))
+    if (!(d >= 0 && d < 0x1p64))
         js_error(J, "uint64 out of range at index %d", idx);
     return d;
 }
@@ -1202,6 +1212,7 @@ static const struct fn_entry utils_fns[] = {
     FN_ENTRY(split_path, 1),
     AF_ENTRY(join_path, 2),
     FN_ENTRY(get_env_list, 0),
+    FN_ENTRY(terminal_display_width, 1),
 
     FN_ENTRY(read_file, 2),
     AF_ENTRY(_write_file, 3),

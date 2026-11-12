@@ -33,6 +33,7 @@
 #include "misc/node.h"
 #include "misc/thread_tools.h"
 #include "common/msg.h"
+#include "demux/demux.h"
 #include "options/path.h"
 #include "video/mp_image.h"
 #include "video/mp_image_pool.h"
@@ -40,6 +41,7 @@
 #include "video/image_writer.h"
 #include "video/sws_utils.h"
 #include "sub/osd.h"
+#include "stream/stream.h"
 
 #include "video/csputils.h"
 
@@ -66,14 +68,6 @@ void screenshot_init(struct MPContext *mpctx)
         .frameno = 1,
         .log = mp_log_new(mpctx, mpctx->log, "screenshot")
     };
-}
-
-static char *stripext(void *talloc_ctx, const char *s)
-{
-    const char *end = strrchr(s, '.');
-    if (!end)
-        end = s + strlen(s);
-    return talloc_asprintf(talloc_ctx, "%.*s", (int)(end - s), s);
 }
 
 static bool write_screenshot(struct mp_cmd_ctx *cmd, struct mp_image *img,
@@ -175,16 +169,23 @@ static char *create_fname(struct MPContext *mpctx, char *template,
         }
         case 'f':
         case 'F': {
-            char *video_file = NULL;
-            if (mpctx->filename)
-                video_file = mp_basename(mpctx->filename);
+            const char *name;
+            if (!mpctx->filename) {
+                name = "NO_FILE";
+            } else if (mpctx->demuxer && mpctx->demuxer->server_filename) {
+                name = mpctx->demuxer->server_filename;
+            } else {
+                if (bstr_endswith0(bstr0(mpctx->filename), "/")) {
+                    name = mpctx->filename;
+                } else {
+                    name = mp_basename(mpctx->filename);
+                }
+                if (mp_is_url(bstr0(mpctx->filename)))
+                    name = mp_url_unescape(res, name);
+            }
 
-            if (!video_file)
-                video_file = "NO_FILE";
-
-            char *name = video_file;
             if (fmt == 'F')
-                name = stripext(res, video_file);
+                name = bstrto0(res, mp_strip_ext(bstr0(name)));
             append_filename(&res, name);
             break;
         }
@@ -231,13 +232,20 @@ static char *create_fname(struct MPContext *mpctx, char *template,
         }
         case 't': {
             char tfmt = *template;
-            if (!tfmt)
+            // Translate common extensions to the closest alternative.
+            size_t i = strcspn("sklPaAbBcCdDeFgGhHIjmMnprRStTuUVwWxXyYzZ%", (char[]){tfmt, '\0'});
+            tfmt =             "sHIpaAbBcCdDeFgGhHIjmMnprRStTuUVwWxXyYzZ%"[i];
+            if (!tfmt || !local_time)
                 goto error_exit;
             template++;
-            char fmtstr[] = {'%', tfmt, '\0'};
             char buffer[80];
-            if (strftime(buffer, sizeof(buffer), fmtstr, local_time) == 0)
-                buffer[0] = '\0';
+            if (tfmt == 's') {
+                snprintf(buffer, sizeof(buffer), "%"PRId64, (int64_t)raw_time);
+            } else {
+                char fmtstr[] = {'%', tfmt, '\0'};
+                if (strftime(buffer, sizeof(buffer), fmtstr, local_time) == 0)
+                    buffer[0] = '\0';
+            }
             append_filename(&res, buffer);
             break;
         }
@@ -300,9 +308,6 @@ static char *gen_fname(struct mp_cmd_ctx *cmd, const char *file_ext)
             void *t = fname;
             dir = mp_get_user_path(t, ctx->mpctx->global, dir);
             fname = mp_path_join(NULL, dir, fname);
-
-            mp_mkdirp(dir);
-
             talloc_free(t);
         }
 
@@ -377,7 +382,7 @@ static struct mp_image *screenshot_get(struct MPContext *mpctx, int mode,
     }
 
     // vo_get_current_frame() can return a hardware frame, which we have to download first.
-    if (image && image->fmt.flags & MP_IMGFLAG_HWACCEL) {
+    if (image && IMGFMT_IS_HWACCEL(image->imgfmt)) {
         struct mp_image *nimage = mp_image_hw_download(image, NULL);
         talloc_free(image);
         if (!nimage)
@@ -488,8 +493,7 @@ void cmd_screenshot_to_file(void *p)
     int mode = cmd->args[1].v.i;
     struct image_writer_opts opts = *mpctx->opts->screenshot_image_opts;
 
-    char *ext = mp_splitext(filename, NULL);
-    int format = image_writer_format_from_ext(ext);
+    int format = image_writer_format_from_ext(mp_get_ext(bstr0(filename)));
     if (format)
         opts.format = format;
     bool high_depth = image_writer_high_depth(&opts);

@@ -17,6 +17,7 @@
 
 #include <assert.h>
 #include <float.h>
+#include <inttypes.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -405,6 +406,8 @@ static const struct gl_video_opts gl_video_opts_def = {
         .scene_threshold_low = 1.0,
         .scene_threshold_high = 3.0,
         .contrast_smoothness = 3.5,
+        .mastering_clip = 1.0,
+        .film_strength = 0.3,
     },
     .early_flush = -1,
     .shader_cache = true,
@@ -413,6 +416,7 @@ static const struct gl_video_opts gl_video_opts_def = {
 };
 
 static OPT_STRING_VALIDATE_FUNC(validate_error_diffusion_opt);
+static OPT_STRING_VALIDATE_FUNC(validate_target_gamut);
 
 #define OPT_BASE_STRUCT struct gl_video_opts
 
@@ -452,7 +456,7 @@ const struct m_sub_options gl_video_conf = {
             {"no", 0}, {"input", 1}, {"output", 2}, {"both", 1|2}, {"auto", 1|2|4})},
         {"target-contrast", OPT_CHOICE(target_contrast, {"auto", 0}, {"inf", -1}),
             M_RANGE(10, 10 / PL_COLOR_HDR_BLACK)},
-        {"target-gamut", OPT_CHOICE_C(target_gamut, pl_csp_prim_names)},
+        {"target-gamut", OPT_STRING_VALIDATE(target_gamut, validate_target_gamut)},
         {"tone-mapping", OPT_CHOICE(tone_map.curve,
             {"auto",     TONE_MAPPING_AUTO},
             {"clip",     TONE_MAPPING_CLIP},
@@ -498,6 +502,10 @@ const struct m_sub_options gl_video_conf = {
             M_RANGE(0, 2.0)},
         {"hdr-contrast-smoothness", OPT_FLOAT(tone_map.contrast_smoothness),
             M_RANGE(1.0, 100.0)},
+        {"hdr-mastering-clip", OPT_FLOAT(tone_map.mastering_clip),
+            M_RANGE(0.0, 1.0)},
+        {"hdr-film-strength", OPT_FLOAT(tone_map.film_strength),
+            M_RANGE(0.0, 2.0)},
         {"opengl-pbo", OPT_BOOL(pbo)},
         {"scale", OPT_CHOICE_C(scaler[SCALER_SCALE].kernel.function, scale_filters)},
         SCALER_OPTS("scale",  SCALER_SCALE),
@@ -1093,6 +1101,7 @@ static void unref_current_image(struct gl_video *p)
 
     if (vimg->hwdec_mapped) {
         mp_assert(p->hwdec_active && p->hwdec_mapper);
+        ra_hwdec_mapper_end_access(p->hwdec_mapper);
         ra_hwdec_mapper_unmap(p->hwdec_mapper);
         memset(vimg->planes, 0, sizeof(vimg->planes));
         vimg->hwdec_mapped = false;
@@ -1250,7 +1259,7 @@ static void pass_is_compute(struct gl_video *p, int bw, int bh, bool flexible)
 }
 
 // w/h: the width/height of the compute shader's operating domain (e.g. the
-// target target that needs to be written, or the source texture that needs to
+// target that needs to be written, or the source texture that needs to
 // be reduced)
 static void dispatch_compute(struct gl_video *p, int w, int h,
                              struct compute_info info)
@@ -1589,7 +1598,8 @@ static struct ra_tex **next_hook_tex(struct gl_video *p)
 // Process hooks for a plane, saving the result and returning a new image
 // If 'trans' is NULL, the shader is forbidden from transforming img
 static struct image pass_hook(struct gl_video *p, const char *name,
-                              struct image img, struct gl_transform *trans)
+                              struct image img, struct gl_transform *trans,
+                              int max_output_components)
 {
     if (!name)
         return img;
@@ -1617,6 +1627,14 @@ found:
 
         const char *store_name = hook->save_tex ? hook->save_tex : name;
         bool is_overwrite = strcmp(store_name, name) == 0;
+        int comps = hook->components ? hook->components : img.components;
+
+        if (is_overwrite && comps > max_output_components) {
+            MP_ERR(p, "Hook tried to overwrite %s COMPONENTS to "
+                   "unsupported value: %d (max supported: %d)\n",
+                   name, comps, max_output_components);
+            continue;
+        }
 
         // If user shader is set to align HOOKED with reference and fix its
         // offset, it requires HOOKED to be resizable and overwritten.
@@ -1642,7 +1660,6 @@ found:
         struct gl_transform hook_off = identity_trans;
         hook->hook(p, img, &hook_off, hook->priv);
 
-        int comps = hook->components ? hook->components : img.components;
         skip_unused(p, comps);
 
         // Compute the updated FBO dimensions and store the result
@@ -1717,7 +1734,7 @@ found: ;
     struct ra_tex **tex = next_hook_tex(p);
     finish_pass_tex(p, tex, p->texture_w, p->texture_h);
     struct image img = image_wrap(*tex, PLANE_RGB, p->components);
-    img = pass_hook(p, name, img, tex_trans);
+    img = pass_hook(p, name, img, tex_trans, 4);
     copy_image(p, &(int){0}, img);
     p->texture_w = img.w;
     p->texture_h = img.h;
@@ -1772,21 +1789,50 @@ static bool scaler_conf_eq(struct scaler_config a, struct scaler_config b)
            a.clamp == b.clamp;
 }
 
+void scaler_conf_merge(struct scaler_config *dst, const struct scaler_config *src,
+                       enum scaler_unit unit)
+{
+    if (dst->kernel.function != SCALER_INHERIT)
+        return;
+    mp_assert(src->kernel.function != SCALER_INHERIT);
+    dst->kernel.function = src->kernel.function;
+
+    const struct scaler_config *def = &gl_video_opts_def.scaler[unit];
+    for (int i = 0; i < MP_ARRAY_SIZE(dst->kernel.params); i++) {
+        if (isnan(dst->kernel.params[i]) || dst->kernel.params[i] == def->kernel.params[i])
+            dst->kernel.params[i] = src->kernel.params[i];
+        if (isnan(dst->window.params[i]) || dst->window.params[i] == def->window.params[i])
+            dst->window.params[i] = src->window.params[i];
+    }
+    if (dst->kernel.blur == def->kernel.blur)
+        dst->kernel.blur = src->kernel.blur;
+    if (dst->kernel.taper == def->kernel.taper)
+        dst->kernel.taper = src->kernel.taper;
+    if (dst->window.taper == def->window.taper)
+        dst->window.taper = src->window.taper;
+    if (dst->clamp == def->clamp)
+        dst->clamp = src->clamp;
+    if (dst->radius == def->radius)
+        dst->radius = src->radius;
+    if (dst->antiring == def->antiring)
+        dst->antiring = src->antiring;
+    if (dst->window.function == def->window.function)
+        dst->window.function = src->window.function;
+}
+
 static void reinit_scaler(struct gl_video *p, struct scaler *scaler,
                           const struct scaler_config *conf,
                           double scale_factor,
                           int sizes[])
 {
     mp_assert(conf);
+    mp_assert(conf->kernel.function != SCALER_INHERIT);
     if (scaler_conf_eq(scaler->conf, *conf) &&
         scaler->scale_factor == scale_factor &&
         scaler->initialized)
         return;
 
     uninit_scaler(p, scaler);
-
-    if (conf->kernel.function == SCALER_INHERIT)
-        conf = &p->opts.scaler[SCALER_SCALE];
 
     struct filter_kernel bare_window;
     const struct filter_kernel *t_kernel = mp_find_filter_kernel(conf->kernel.function);
@@ -1851,6 +1897,12 @@ static void reinit_scaler(struct gl_video *p, struct scaler *scaler,
     static const int lut_size = 256;
     float *weights = talloc_array(NULL, float, lut_size * stride);
     mp_compute_lut(scaler->kernel, lut_size, stride, weights);
+
+    for (int n = 0; n < lut_size; n++) {
+        float *row = weights + n * stride;
+        for (int i = size; i < stride; i++)
+            row[i] = row[i - num_components];
+    }
 
     bool use_1d = scaler->kernel->polar && (p->ra->caps & RA_CAP_TEX_1D);
 
@@ -2034,9 +2086,10 @@ static void unsharp_hook(struct gl_video *p, struct image img,
 struct szexp_ctx {
     struct gl_video *p;
     struct image img;
+    struct gl_user_shader_hook *shader;
 };
 
-static bool szexp_lookup(void *priv, struct bstr var, float size[2])
+static bool szexp_tex_lookup(void *priv, struct bstr var, float size[2])
 {
     struct szexp_ctx *ctx = priv;
     struct gl_video *p = ctx->p;
@@ -2073,15 +2126,69 @@ static bool szexp_lookup(void *priv, struct bstr var, float size[2])
     return false;
 }
 
+static bool szexp_param_lookup(void *priv, struct bstr var, float *out)
+{
+    struct szexp_ctx *ctx = priv;
+
+    for (int i = 0; i < ctx->shader->num_params; i++) {
+        const struct gl_user_shader_param *param = &ctx->shader->params[i];
+        if (bstr_equals(var, param->name)) {
+            double value = param->value;
+            gpu_get_auto_param(ctx->p->image.mpi, param->name, &value);
+            *out = value;
+            return true;
+        }
+        int idx = resolve_shader_enum_name(param, var);
+        if (idx >= 0) {
+            *out = idx;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static bool user_hook_cond(struct gl_video *p, struct image img, void *priv)
 {
     struct gl_user_shader_hook *shader = priv;
     mp_assert(shader);
 
     float res = false;
-    struct szexp_ctx ctx = {p, img};
-    eval_szexpr(p->log, &ctx, szexp_lookup, shader->cond, &res);
+    struct szexp_ctx ctx = {p, img, shader};
+    eval_szexpr(p->log, &ctx, szexp_tex_lookup, szexp_param_lookup,
+                shader->cond, &res);
     return res;
+}
+
+static void update_user_shader_opts(struct gl_video *p, const char *path,
+                                    struct gl_user_shader_hook *shader)
+{
+    for (int i = 0; i < shader->num_params; i++)
+        shader->params[i].value = shader->params[i].initial;
+
+    if (!p->opts.user_shader_opts)
+        return;
+
+    struct bstr shadername = mp_strip_ext(mp_basename_bstr(bstr0(path)));
+
+    for (int n = 0; p->opts.user_shader_opts[n * 2]; n++) {
+        struct bstr key = bstr0(p->opts.user_shader_opts[n * 2 + 0]);
+        struct bstr val = bstr0(p->opts.user_shader_opts[n * 2 + 1]);
+
+        int pos = bstrchr(key, '/');
+        if (pos >= 0) {
+            if (!bstr_equals(bstr_splice(key, 0, pos), shadername))
+                continue;
+            key = bstr_cut(key, pos + 1);
+        }
+
+        for (int i = 0; i < shader->num_params; i++) {
+            struct gl_user_shader_param *param = &shader->params[i];
+            if (!bstr_equals(key, param->name))
+                continue;
+            parse_shader_param_value(p->log, param, val, &param->value);
+        }
+    }
 }
 
 static void user_hook(struct gl_video *p, struct image img,
@@ -2089,6 +2196,36 @@ static void user_hook(struct gl_video *p, struct image img,
 {
     struct gl_user_shader_hook *shader = priv;
     mp_assert(shader);
+
+    for (int i = 0; i < shader->num_params; i++) {
+        const struct gl_user_shader_param *param = &shader->params[i];
+
+        struct bstr enum_rest = param->enum_body;
+        int idx = 0;
+        while (enum_rest.len > 0) {
+            struct bstr enum_line = bstr_strip(bstr_getline(enum_rest, &enum_rest));
+            if (enum_line.len == 0)
+                continue;
+            GLSLHF("#define %.*s %d\n", BSTR_P(enum_line), idx);
+            idx++;
+        }
+
+        double value = param->value;
+        gpu_get_auto_param(p->image.mpi, param->name, &value);
+
+        switch (param->type) {
+        case GL_USER_SHADER_PARAM_FLOAT:
+            gl_sc_uniform_f_bstr(p->sc, param->name, value);
+            break;
+        case GL_USER_SHADER_PARAM_INT:
+            gl_sc_uniform_i_bstr(p->sc, param->name, lrint(value));
+            break;
+        case GL_USER_SHADER_PARAM_DEFINE:
+            GLSLHF("#define %.*s %d\n", BSTR_P(param->name), (int)lrint(value));
+            break;
+        }
+    }
+
     load_shader(p, shader->pass_body);
 
     pass_describe(p, "user shader: %.*s (%s)", BSTR_P(shader->pass_desc),
@@ -2105,17 +2242,21 @@ static void user_hook(struct gl_video *p, struct image img,
     // to do this and display an error message than just crash OpenGL
     float w = 1.0, h = 1.0;
 
-    eval_szexpr(p->log, &(struct szexp_ctx){p, img}, szexp_lookup, shader->width, &w);
-    eval_szexpr(p->log, &(struct szexp_ctx){p, img}, szexp_lookup, shader->height, &h);
+    eval_szexpr(p->log, &(struct szexp_ctx){p, img, shader}, szexp_tex_lookup,
+                szexp_param_lookup, shader->width, &w);
+    eval_szexpr(p->log, &(struct szexp_ctx){p, img, shader}, szexp_tex_lookup,
+                szexp_param_lookup, shader->height, &h);
 
     *trans = (struct gl_transform){{{w / img.w, 0}, {0, h / img.h}}};
     gl_transform_trans(shader->offset, trans);
 }
 
-static bool add_user_hook(void *priv, const struct gl_user_shader_hook *hook)
+static bool add_user_hook(void *priv, const char *path,
+                          const struct gl_user_shader_hook *hook)
 {
     struct gl_video *p = priv;
     struct gl_user_shader_hook *copy = talloc_dup(p, (struct gl_user_shader_hook *)hook);
+    update_user_shader_opts(p, path, copy);
     struct tex_hook texhook = {
         .save_tex = bstrdup0(copy, copy->save_tex),
         .components = copy->components,
@@ -2155,7 +2296,7 @@ static void load_user_shaders(struct gl_video *p, char **shaders)
 
     for (int n = 0; shaders[n] != NULL; n++) {
         struct bstr file = load_cached_file(p, shaders[n]);
-        parse_user_shader(p->log, p->ra, file, p, add_user_hook, add_user_tex);
+        parse_user_shader(p->log, p->ra, file, shaders[n], p, add_user_hook, add_user_tex);
     }
 }
 
@@ -2267,7 +2408,7 @@ static void pass_read_video(struct gl_video *p)
         default: continue;
         }
 
-        img[n] = pass_hook(p, name, img[n], &offsets[n]);
+        img[n] = pass_hook(p, name, img[n], &offsets[n], img[n].components);
 
         if (reference_tex_num == n) {
             // The reference texture is finalized now.
@@ -2369,9 +2510,12 @@ static void pass_read_video(struct gl_video *p)
             continue;
 
         const struct scaler_config *conf = &p->opts.scaler[scaler_id];
-
-        if (conf->kernel.function == SCALER_INHERIT)
-            conf = &p->opts.scaler[SCALER_SCALE];
+        struct scaler_config tmp;
+        if (conf->kernel.function == SCALER_INHERIT) {
+            tmp = *conf;
+            scaler_conf_merge(&tmp, &p->opts.scaler[SCALER_SCALE], scaler_id);
+            conf = &tmp;
+        }
 
         struct scaler *scaler = &p->scaler[scaler_id];
 
@@ -2384,7 +2528,7 @@ static void pass_read_video(struct gl_video *p)
         }
 
         // Run any post-scaling hooks
-        img[n] = pass_hook(p, name, img[n], NULL);
+        img[n] = pass_hook(p, name, img[n], NULL, img[n].components);
     }
 
     // All planes are of the same size and properly aligned at this point
@@ -2438,46 +2582,43 @@ static void pass_convert_yuv(struct gl_video *p)
 
     GLSL(color.rgb = mat3(colormatrix) * color.rgb + colormatrix_c;)
 
-    if (cparams.repr.sys == PL_COLOR_SYSTEM_XYZ) {
+    if (cparams.repr.sys == PL_COLOR_SYSTEM_XYZ)
         pass_delinearize(p->sc, p->image_params.color.transfer);
-        // mp_get_csp_matrix implicitly converts XYZ to DCI-P3
-        p->image_params.repr.sys = PL_COLOR_SYSTEM_RGB;
-        p->image_params.color.primaries = PL_COLOR_PRIM_DCI_P3;
-    }
 
     if (p->image_params.repr.sys == PL_COLOR_SYSTEM_BT_2020_C) {
         // Conversion for C'rcY'cC'bc via the BT.2020 CL system:
-        // C'bc = (B'-Y'c) / 1.9404  | C'bc <= 0
-        //      = (B'-Y'c) / 1.5816  | C'bc >  0
+        // C'bc = (B'-Y'c) / (2 Nb)  | C'bc <= 0
+        //      = (B'-Y'c) / (2 Pb)  | C'bc >  0
         //
-        // C'rc = (R'-Y'c) / 1.7184  | C'rc <= 0
-        //      = (R'-Y'c) / 0.9936  | C'rc >  0
+        // C'rc = (R'-Y'c) / (2 Nr)  | C'rc <= 0
+        //      = (R'-Y'c) / (2 Pr)  | C'rc >  0
         //
-        // as per the BT.2020 specification, table 4. This is a non-linear
-        // transformation because (constant) luminance receives non-equal
-        // contributions from the three different channels.
+        // with Nb = OETF(1 - Kb), Pb = 1 - OETF(Kb), Nr = OETF(1 - Kr) and
+        // Pr = 1 - OETF(Kr), as per the BT.2020-2 specification, table 4.
+        // This is a non-linear transformation because (constant) luminance
+        // receives non-equal contributions from the three different channels.
         GLSLF("// constant luminance conversion \n"
-              "color.br = color.br * mix(vec2(1.5816, 0.9936),              \n"
-              "                         vec2(1.9404, 1.7184),               \n"
-              "                         %s(lessThanEqual(color.br, vec2(0))))\n"
-              "          + color.gg;                                        \n",
+              "color.br = color.br * mix(vec2(1.5819708492989484, 0.99382959526841756), \n"
+              "                         vec2(1.9403433056341009, 1.7182419845671139),  \n"
+              "                         %s(lessThanEqual(color.br, vec2(0))))           \n"
+              "          + color.gg;                                                   \n",
               gl_sc_bvec(p->sc, 2));
-        // Expand channels to camera-linear light. This shader currently just
-        // assumes everything uses the BT.2020 12-bit gamma function, since the
-        // difference between 10 and 12-bit is negligible for anything other
-        // than 12-bit content.
-        GLSLF("color.rgb = mix(color.rgb * vec3(1.0/4.5),                       \n"
-              "                pow((color.rgb + vec3(0.0993))*vec3(1.0/1.0993), \n"
-              "                    vec3(1.0/0.45)),                             \n"
-              "                %s(lessThanEqual(vec3(0.08145), color.rgb)));    \n",
+        // Expand channels to camera-linear light, through the BT.2020 gamma
+        // function with the exact alpha and beta of BT.2020-2, which its 10
+        // and 12-bit values approximate
+        GLSLF("color.rgb = mix(color.rgb * vec3(1.0/4.5),                                             \n"
+              "                pow((color.rgb + vec3(0.09929682680944294))*vec3(1.0/1.0992968268094429), \n"
+              "                    vec3(1.0/0.45)),                                                   \n"
+              "                %s(lessThanEqual(vec3(0.081242858298635133), color.rgb)));            \n",
               gl_sc_bvec(p->sc, 3));
         // Calculate the green channel from the expanded RYcB
         // The BT.2020 specification says Yc = 0.2627*R + 0.6780*G + 0.0593*B
         GLSL(color.g = (color.g - 0.2627*color.r - 0.0593*color.b)*1.0/0.6780;)
         // Recompress to receive the R'G'B' result, same as other systems
-        GLSLF("color.rgb = mix(color.rgb * vec3(4.5),                       \n"
-              "                vec3(1.0993) * pow(color.rgb, vec3(0.45)) - vec3(0.0993), \n"
-              "                %s(lessThanEqual(vec3(0.0181), color.rgb))); \n",
+        GLSLF("color.rgb = mix(color.rgb * vec3(4.5),                                     \n"
+              "                vec3(1.0992968268094429) * pow(color.rgb, vec3(0.45))      \n"
+              "                    - vec3(0.09929682680944294),                           \n"
+              "                %s(lessThanEqual(vec3(0.018053968510807807), color.rgb))); \n",
               gl_sc_bvec(p->sc, 3));
     }
 
@@ -2545,10 +2686,10 @@ static void pass_scale_main(struct gl_video *p)
         p->texture_offset.t[0] = roundf(p->texture_offset.t[0]);
         p->texture_offset.t[1] = roundf(p->texture_offset.t[1]);
     }
-    if (downscaling &&
-        p->opts.scaler[SCALER_DSCALE].kernel.function != SCALER_INHERIT) {
+    if (downscaling) {
         scaler_conf = p->opts.scaler[SCALER_DSCALE];
         scaler = &p->scaler[SCALER_DSCALE];
+        scaler_conf_merge(&scaler_conf, &p->opts.scaler[SCALER_SCALE], SCALER_DSCALE);
     }
 
     // When requesting correct-downscaling and the clip is anamorphic, and
@@ -2957,7 +3098,7 @@ static void pass_dither(struct gl_video *p, const struct ra_fbo *fbo)
     // screen. The superfluous bits will be used for rounding according to the
     // dither matrix. The precision of the source implicitly decides how many
     // dither patterns can be visible.
-    int dither_quantization = (1 << dst_depth) - 1;
+    uint32_t dither_quantization = UINT32_MAX >> (32 - dst_depth);
     int dither_size = p->dither_texture->params.w;
 
     gl_sc_uniform_texture(p->sc, "dither", p->dither_texture);
@@ -2980,7 +3121,8 @@ static void pass_dither(struct gl_video *p, const struct ra_fbo *fbo)
     }
 
     GLSL(float dither_value = texture(dither, dither_pos).r;)
-    GLSLF("color = floor(color * %d.0 + dither_value + 0.5 / %d.0) * 1.0/%d.0;\n",
+    GLSLF("color = floor(color * %" PRIu32 ".0 + dither_value + 0.5 / %d.0) * "
+          "1.0/%" PRIu32 ".0;\n",
           dither_quantization, dither_size * dither_size, dither_quantization);
 }
 
@@ -3006,13 +3148,8 @@ static void pass_draw_osd(struct gl_video *p, int osd_flags, int frame_flags,
         // When subtitles need to be color managed, assume they're in sRGB
         // (for lack of anything saner to do)
         if (cms) {
-            static const struct pl_color_space csp_srgb = {
-                .primaries = PL_COLOR_PRIM_BT_709,
-                .transfer = PL_COLOR_TRC_SRGB,
-            };
-
-            pass_colormanage(p, csp_srgb, MP_CSP_LIGHT_DISPLAY, &fbo->color_space,
-                             frame_flags, true);
+            pass_colormanage(p, pl_color_space_srgb, MP_CSP_LIGHT_DISPLAY,
+                             &fbo->color_space, frame_flags, true);
         }
         mpgl_osd_draw_finish(p->osd, n, p->sc, fbo);
     }
@@ -3668,12 +3805,6 @@ void gl_video_set_osd_pts(struct gl_video *p, double pts)
     p->osd_pts = pts;
 }
 
-bool gl_video_check_osd_change(struct gl_video *p, struct mp_osd_res *res,
-                               double pts)
-{
-    return p->osd ? mpgl_osd_check_change(p->osd, res, pts) : false;
-}
-
 void gl_video_resize(struct gl_video *p,
                      struct mp_rect *src, struct mp_rect *dst,
                      struct mp_osd_res *osd)
@@ -3741,21 +3872,22 @@ static bool pass_upload_image(struct gl_video *p, struct mp_image *mpi, uint64_t
         pass_describe(p, "map frame (hwdec)");
         timer_pool_start(p->upload_timer);
         bool ok = ra_hwdec_mapper_map(p->hwdec_mapper, vimg->mpi) >= 0;
+        vimg->hwdec_mapped = ok;
+        // The frame stays mapped and in use until it is replaced.
+        if (ok)
+            ok = ra_hwdec_mapper_begin_access(p->hwdec_mapper) >= 0;
         timer_pool_stop(p->upload_timer);
         struct mp_pass_perf perf = timer_pool_measure(p->upload_timer);
         pass_record(p, &perf);
 
-        vimg->hwdec_mapped = true;
         if (ok) {
-            struct mp_image layout = {0};
-            mp_image_set_params(&layout, &p->image_params);
             struct ra_tex **tex = p->hwdec_mapper->tex;
             for (int n = 0; n < p->plane_count; n++) {
                 vimg->planes[n] = (struct texplane){
-                    .w = mp_image_plane_w(&layout, n),
-                    .h = mp_image_plane_h(&layout, n),
+                    .w = tex[n]->params.w,
+                    .h = tex[n]->params.h,
                     .tex = tex[n],
-                    .flipped = layout.params.vflip,
+                    .flipped = p->image_params.vflip,
                 };
             }
         } else {
@@ -4272,7 +4404,8 @@ void gl_video_configure_queue(struct gl_video *p, struct vo *vo)
         }
     }
 
-    vo_set_queue_params(vo, 0, queue_size);
+    queue_size = MPMIN(queue_size, VO_MAX_REQ_FRAMES);
+    vo_set_queue_params(vo, 0, queue_size, queue_size + 1);
 }
 
 static int validate_error_diffusion_opt(struct mp_log *log, const m_option_t *opt,
@@ -4297,6 +4430,13 @@ static int validate_error_diffusion_opt(struct mp_log *log, const m_option_t *op
             mp_fatal(log, "No error diffusion kernel named '%s' found!\n", s);
     }
     return r;
+}
+
+static int validate_target_gamut(struct mp_log *log, const m_option_t *opt,
+                                 struct bstr name, const char **value)
+{
+    struct pl_raw_primaries tmp;
+    return mp_parse_raw_primaries(log, *value, &tmp);
 }
 
 void gl_video_set_ambient_lux(struct gl_video *p, double lux)

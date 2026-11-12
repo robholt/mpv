@@ -22,6 +22,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <libplacebo/colorspace.h>
+
 #include "options/m_option.h"
 
 // NOTE: VOs must support at least SUBBITMAP_BGRA.
@@ -29,6 +31,8 @@ enum sub_bitmap_format {
     SUBBITMAP_EMPTY = 0,// no bitmaps; always has num_parts==0
     SUBBITMAP_LIBASS,   // A8, with a per-surface blend color (libass.color)
     SUBBITMAP_BGRA,     // IMGFMT_BGRA (MSB=A, LSB=B), scaled, premultiplied alpha
+    SUBBITMAP_SUBRANDR, // contains `sbr_output_image`s, must be converted to
+                        // SUBBITMAP_BGRA during packing
 
     SUBBITMAP_COUNT
 };
@@ -47,9 +51,23 @@ struct sub_bitmap {
     // with the bitmap pointer.)
     int src_x, src_y;
 
-    struct {
-        uint32_t color;
-    } libass;
+    union {
+        struct {
+            uint32_t color;
+        } libass;
+        struct {
+            const struct sbr_output_image *image;
+        } subrandr;
+        struct {
+            enum pl_color_primaries primaries;
+            enum pl_color_transfer transfer;
+            // Only luminance for now, not using full pl_color_space to save on size.
+            float max_luma;
+            // The bitmap is in the video's colorspace, including HDR
+            // metadata. primaries and transfer are ignored.
+            bool video_color_space;
+        } bgra;
+    };
 };
 
 struct sub_bitmaps {
@@ -106,7 +124,7 @@ struct mp_osd_res {
 bool osd_res_equals(struct mp_osd_res a, struct mp_osd_res b);
 
 // 0 <= sub_bitmaps.render_index < MAX_OSD_PARTS
-#define MAX_OSD_PARTS 5
+#define MAX_OSD_PARTS 6
 
 // Start of OSD symbols in osd_font.pfb
 #define OSD_CODEPOINTS 0xE000
@@ -148,6 +166,7 @@ struct osd_style_opts {
     float spacing;
     int margin_x;
     int margin_y;
+    int margin_y_offset;
     int align_x;
     int align_y;
     float blur;
@@ -200,7 +219,7 @@ struct osd_progbar_state {
 };
 void osd_set_progbar(struct osd_state *osd, struct osd_progbar_state *s);
 
-void osd_set_external2(struct osd_state *osd, struct sub_bitmaps *imgs);
+void osd_set_bitmaps(struct osd_state *osd, int type, struct sub_bitmaps *imgs);
 
 enum mp_osd_draw_flags {
     OSD_DRAW_SUB_FILTER = (1 << 0),

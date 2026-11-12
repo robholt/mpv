@@ -27,6 +27,10 @@
 #include "context.h"
 #include "ra_d3d11.h"
 
+#ifdef PL_HAVE_D3D11
+#include <libplacebo/d3d11.h>
+#endif
+
 struct d3d11_opts {
     int feature_level;
     int warp;
@@ -82,7 +86,8 @@ const struct m_sub_options d3d11_conf = {
             {"bt.2020", DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020}),
             .flags = UPDATE_VO,
         },
-        {"d3d11-exclusive-fs", OPT_BOOL(exclusive_fs)},
+        {"d3d11-exclusive-fs", OPT_BOOL(exclusive_fs),
+            .flags = UPDATE_BUILTIN_SCRIPTS},
         {"d3d11-output-mode", OPT_CHOICE(output_mode,
             {"auto", -1},
             {"window", 0},
@@ -115,6 +120,7 @@ struct priv {
     ID3D11Device *device;
     IDXGISwapChain *swapchain;
     struct pl_color_space swapchain_csp;
+    BOOL fullscreen_state;
 
     int64_t perf_freq;
     unsigned last_sync_refresh_count;
@@ -217,6 +223,15 @@ static struct pl_color_space d3d11_target_color_space(struct ra_swapchain *sw)
     return (struct pl_color_space){0};
 }
 
+static float d3d11_target_ref_luma(struct ra_swapchain *sw)
+{
+    if (sw->ctx->opts.composition)
+        return 0;
+
+    struct priv *p = sw->priv;
+    return mp_dxgi_sdr_white_level_from_hwnd(&p->dxgi_ctx, vo_w32_hwnd(sw->ctx->vo));
+}
+
 static bool d3d11_start_frame(struct ra_swapchain *sw, struct ra_fbo *out_fbo)
 {
     struct priv *p = sw->priv;
@@ -276,7 +291,21 @@ static void d3d11_swap_buffers(struct ra_swapchain *sw)
     QueryPerformanceCounter(&perf_count);
     p->last_submit_qpc = perf_count.QuadPart;
 
-    IDXGISwapChain_Present(p->swapchain, p->opts->sync_interval, 0);
+    HRESULT hr = IDXGISwapChain_Present(p->swapchain, p->opts->sync_interval, 0);
+    if (hr == S_OK)
+        return;
+
+    // DXGI leaves exclusive fullscreen by itself during Present(), e.g. when the
+    // window loses the focus, and returns a status then. The buffers must be
+    // resized after that, or the next Present() fails.
+    BOOL fullscreen = FALSE;
+    IDXGISwapChain_GetFullscreenState(p->swapchain, &fullscreen, NULL);
+    if (fullscreen != p->fullscreen_state) {
+        MP_VERBOSE(sw->ctx, "Full-screen exclusive mode was %s by DXGI\n",
+                   fullscreen ? "enabled" : "disabled");
+        p->fullscreen_state = fullscreen;
+        resize(sw->ctx);
+    }
 }
 
 static void d3d11_get_vsync(struct ra_swapchain *sw, struct vo_vsync_info *info)
@@ -396,6 +425,7 @@ static bool d3d11_set_fullscreen(struct ra_ctx *ctx)
                                            enable_exclusive_fs, NULL);
     if (FAILED(hr))
         return false;
+    p->fullscreen_state = enable_exclusive_fs;
 
     if (!resize(ctx))
         return false;
@@ -452,12 +482,28 @@ static int d3d11_control(struct ra_ctx *ctx, int *events, int request, void *arg
         if (!resize(ctx))
             return VO_ERROR;
     }
+
+    if (!ctx->opts.composition && (*events & VO_EVENT_FOCUS) &&
+        !p->fullscreen_state && p->vo_opts->fullscreen && p->opts->exclusive_fs)
+    {
+        bool focused = false;
+        int focus_events = 0;
+        vo_w32_control(ctx->vo, &focus_events, VOCTRL_GET_FOCUSED, &focused);
+        if (focused)
+            d3d11_set_fullscreen(ctx);
+    }
+
     return ret;
 }
 
 static void d3d11_uninit(struct ra_ctx *ctx)
 {
     struct priv *p = ctx->priv;
+
+    IDXGIDebug *debug = NULL;
+    IDXGIInfoQueue *iqueue = NULL;
+    if (p->device && (ID3D11Device_GetCreationFlags(p->device) & D3D11_CREATE_DEVICE_DEBUG))
+        mp_d3d11_get_debug_interfaces(ctx->log, &debug, &iqueue);
 
     if (p->swapchain)
         IDXGISwapChain_SetFullscreenState(p->swapchain, FALSE, NULL);
@@ -477,11 +523,17 @@ static void d3d11_uninit(struct ra_ctx *ctx)
     // leak checker
     if (ctx->ra)
         ctx->ra->fns->destroy(ctx->ra);
+
+    if (debug)
+        mp_d3d11_report_live_objects(ctx->log, debug, iqueue);
+    SAFE_RELEASE(debug);
+    SAFE_RELEASE(iqueue);
 }
 
 static const struct ra_swapchain_fns d3d11_swapchain = {
     .color_depth  = d3d11_color_depth,
     .target_csp   = d3d11_target_color_space,
+    .target_ref_luma = d3d11_target_ref_luma,
     .start_frame  = d3d11_start_frame,
     .submit_frame = d3d11_submit_frame,
     .swap_buffers = d3d11_swap_buffers,
@@ -584,15 +636,37 @@ IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra)
     return p->swapchain;
 }
 
-bool ra_d3d11_ctx_prefer_8bit_output_format(struct ra_ctx *ra)
+#ifdef PL_HAVE_D3D11
+void ra_d3d11_ctx_set_swapchain_params(struct ra_ctx *ra,
+                                       struct pl_d3d11_swapchain_params *params)
 {
-    if (ra->swapchain->fns != &d3d11_swapchain)
-        return false;
+    mp_assert(ra->swapchain->fns == &d3d11_swapchain);
 
     struct priv *p = ra->priv;
+    int fmt = p->opts->output_format;
 
-    return p->opts->output_format == DXGI_FORMAT_R8G8B8A8_UNORM;
+    switch (fmt) {
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+        params->alpha_bits = 8;
+        params->color_bits = 8;
+        // This is redundant, as alpha bits would force 8-bit output format,
+        // but set it anyway to be explicit.
+        params->disable_10bit_sdr = true;
+        break;
+    case DXGI_FORMAT_R10G10B10A2_UNORM:
+        params->alpha_bits = 2;
+        params->color_bits = 10;
+        break;
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        params->alpha_bits = 16;
+        params->color_bits = 16;
+        break;
+    default:
+        params->alpha_bits = ra->opts.want_alpha ? 8 : 0;
+    };
 }
+#endif
 
 const struct ra_ctx_fns ra_ctx_d3d11 = {
     .type               = "d3d11",

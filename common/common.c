@@ -44,7 +44,7 @@
 // %T: milliseconds (000-999)
 char *mp_format_time_fmt(const char *fmt, double time)
 {
-    if (time == MP_NOPTS_VALUE)
+    if (time == MP_NOPTS_VALUE || !(fabs(time) < 0x1p63))
         return talloc_strdup(NULL, "unknown");
     char *sign = time < 0 ? "-" : "";
     time = time < 0 ? -time : time;
@@ -429,4 +429,9 @@ int mp_lcm(int x, int y)
 {
     mp_assert(x && y);
     return x * (y / av_gcd(x, y));
+}
+
+int64_t mp_gcd(int64_t x, int64_t y)
+{
+    return av_gcd(x, y);
 }

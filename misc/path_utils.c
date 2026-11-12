@@ -39,22 +39,29 @@
 #include <pathcch.h>
 #endif
 
-char *mp_basename(const char *path)
+bstr mp_basename_bstr(bstr path)
 {
-    char *s;
+    int separator_pos;
 
 #if HAVE_DOS_PATHS
-    if (!mp_is_url(bstr0(path))) {
-        s = strrchr(path, '\\');
-        if (s)
-            path = s + 1;
-        s = strrchr(path, ':');
-        if (s)
-            path = s + 1;
+    if (!mp_is_url(path)) {
+        separator_pos = bstrrchr(path, '\\');
+        if (separator_pos >= 0)
+            path = bstr_splice(path, separator_pos + 1, path.len);
+        separator_pos = bstrrchr(path, ':');
+        if (separator_pos >= 0)
+            path = bstr_splice(path, separator_pos + 1, path.len);
     }
 #endif
-    s = strrchr(path, '/');
-    return s ? s + 1 : (char *)path;
+    separator_pos = bstrrchr(path, '/');
+    if (separator_pos < 0)
+        return path;
+    return bstr_splice(path, separator_pos + 1, path.len);
+}
+
+const char *mp_basename(const char *path)
+{
+    return mp_basename_bstr(bstr0(path)).start;
 }
 
 struct bstr mp_dirname(const char *path)
@@ -82,16 +89,37 @@ void mp_path_strip_trailing_separator(char *path)
         path[len - 1] = '\0';
 }
 
-char *mp_splitext(const char *path, bstr *root)
+/* Return the file extension, excluding the '.'. If root is not NULL, set it to
+ * the part of the path without extension. So: path == root + "." + extension
+ * Return NULL if there is no file extension and don't set *root in this case.
+ */
+static bstr split_ext(bstr path, bstr *root)
 {
-    mp_assert(path);
-    int skip = (*path == '.'); // skip leading dot for "hidden" unix files
-    const char *split = strrchr(path + skip, '.');
-    if (!split || !split[1] || strchr(split, '/'))
-        return NULL;
+    bstr basename = mp_basename_bstr(path);
+
+    // Skip all leading dots, not just for "hidden" unix files, otherwise we
+    // end up splitting a part of the filename sans leading dot.
+    basename = bstr_splice(basename, bstrspn(basename, "."), basename.len);
+
+    int dot_pos = bstrrchr(basename, '.');
+    if (dot_pos < 0 || dot_pos == basename.len - 1)
+        return (bstr){0};
+    bstr ext = bstr_splice(basename, dot_pos + 1, basename.len);
     if (root)
-        *root = (bstr){(char *)path, split - path};
-    return (char *)split + 1;
+        *root = (bstr){path.start, ext.start - 1 - path.start};
+    return ext;
+}
+
+bstr mp_strip_ext(bstr path)
+{
+    bstr root = {0};
+    split_ext(path, &root);
+    return root.len ? root : path;
+}
+
+bstr mp_get_ext(bstr path)
+{
+    return split_ext(path, NULL);
 }
 
 bool mp_path_is_absolute(struct bstr path)
@@ -139,9 +167,11 @@ char *mp_path_join(void *talloc_ctx, const char *p1, const char *p2)
 
 char *mp_getcwd(void *talloc_ctx)
 {
+#if !HAVE_DOS_PATHS
     char *e_wd = getenv("PWD");
     if (e_wd)
         return talloc_strdup(talloc_ctx, e_wd);
+#endif
 
     char *wd = talloc_array(talloc_ctx, char, 20);
     while (getcwd(wd, talloc_get_size(wd)) == NULL) {
@@ -159,47 +189,39 @@ char *mp_normalize_path(void *talloc_ctx, const char *path)
     if (!path)
         return NULL;
 
-    if (mp_is_url(bstr0(path)) || !strcmp(path, "-"))
+    if (!path[0] || mp_is_url(bstr0(path)) || !strcmp(path, "-"))
         return talloc_strdup(talloc_ctx, path);
 
     void *tmp = talloc_new(NULL);
+    char *result;
+
+#if HAVE_DOS_PATHS
+    wchar_t *pathw = mp_from_utf8(tmp, path);
+    DWORD len = GetFullPathNameW(pathw, 0, NULL, NULL);
+    wchar_t *pathc = talloc_array(tmp, wchar_t, len);
+    if (!len || !GetFullPathNameW(pathw, len, pathc, NULL)) {
+        result = talloc_strdup(talloc_ctx, path);
+        goto exit;
+    }
+    // PathAllocCanonicalize() treats the "." of a \\.\ path as a directory and
+    // removes it, so skip it for device paths.
+    wchar_t *pathx = NULL;
+    if (wcsncmp(pathc, L"\\\\.\\", 4) &&
+        SUCCEEDED(PathAllocCanonicalize(pathc, PATHCCH_ALLOW_LONG_PATHS, &pathx)))
+        pathc = pathx;
+    result = mp_to_utf8(talloc_ctx, pathc);
+    LocalFree(pathx);
+#else
     if (!mp_path_is_absolute(bstr0(path))) {
         char *cwd = mp_getcwd(tmp);
         if (!cwd) {
-            talloc_free(tmp);
-            return NULL;
+            result = talloc_strdup(talloc_ctx, path);
+            goto exit;
         }
         path = mp_path_join(tmp, cwd, path);
     }
 
-#if HAVE_DOS_PATHS
-    wchar_t *pathw = mp_from_utf8(tmp, path);
-    wchar_t *read = pathw, *write = pathw;
-    wchar_t prev = '\0';
-    // preserve leading double backslashes
-    if (read[0] == '\\' && read[1] == '\\') {
-        prev = '\\';
-        write += 2;
-        read += 2;
-    }
-    wchar_t curr;
-    while ((curr = *read)) {
-        if (curr == '/')
-            curr = '\\';
-        if (curr != '\\' || prev != '\\')
-            *write++ = curr;
-        prev = curr;
-        read++;
-    }
-    *write = '\0';
-    size_t max_size = wcslen(pathw) + 1;
-    wchar_t *pathc = talloc_array(tmp, wchar_t, max_size);
-    HRESULT hr = PathCchCanonicalizeEx(pathc, max_size, pathw, PATHCCH_ALLOW_LONG_PATHS);
-    char *ret = SUCCEEDED(hr) ? mp_to_utf8(talloc_ctx, pathc) : talloc_strdup(talloc_ctx, path);
-    talloc_free(tmp);
-    return ret;
-#else
-    char *result = talloc_strdup(tmp, "");
+    result = talloc_strdup(tmp, "");
     const char *next;
     const char *end = path + strlen(path);
 
@@ -226,10 +248,10 @@ char *mp_normalize_path(void *talloc_ctx, const char *path)
                 // long as the symlinked path doesn't change.
                 if (ptr[0] == '.' && ptr[1] == '.') {
                     char *tmp_result = realpath(path, NULL);
-                    result = talloc_strdup(talloc_ctx, tmp_result);
+                    result = talloc_strdup(talloc_ctx,
+                                           tmp_result ? tmp_result : path);
                     free(tmp_result);
-                    talloc_free(tmp);
-                    return result;
+                    goto exit;
                 }
         }
 
@@ -237,10 +259,15 @@ char *mp_normalize_path(void *talloc_ctx, const char *path)
         result = talloc_strndup_append_buffer(result, ptr, next - ptr);
     }
 
+    if (!result[0])
+        result = talloc_strdup_append_buffer(result, "/");
+
     result = talloc_steal(talloc_ctx, result);
+#endif
+
+exit:
     talloc_free(tmp);
     return result;
-#endif
 }
 
 bool mp_path_exists(const char *path)

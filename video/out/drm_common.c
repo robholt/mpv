@@ -53,7 +53,6 @@
 
 #define EVT_RELEASE 1
 #define EVT_ACQUIRE 2
-#define EVT_INTERRUPT 255
 #define HANDLER_ACQUIRE 0
 #define HANDLER_RELEASE 1
 #define RELEASE_SIGNAL SIGUSR1
@@ -100,6 +99,7 @@ const struct m_sub_options drm_conf = {
             {"xrgb2101010", DRM_OPTS_FORMAT_XRGB2101010},
             {"xbgr8888",    DRM_OPTS_FORMAT_XBGR8888},
             {"xbgr2101010", DRM_OPTS_FORMAT_XBGR2101010},
+            {"rgb565",      DRM_OPTS_FORMAT_RGB565},
             {"yuyv",        DRM_OPTS_FORMAT_YUYV})},
         {"drm-draw-surface-size", OPT_SIZE_BOX(draw_surface_size)},
         {"drm-vrr-enabled", OPT_CHOICE(vrr_enabled,
@@ -275,12 +275,6 @@ static bool vt_switcher_init(struct vt_switcher *s, struct mp_log *log)
     return true;
 }
 
-static void vt_switcher_interrupt_poll(struct vt_switcher *s)
-{
-    unsigned char event = EVT_INTERRUPT;
-    (void)write(vt_switcher_pipe[1], &event, sizeof(event));
-}
-
 static void vt_switcher_destroy(struct vt_switcher *s)
 {
     struct vt_mode vt_mode = {0};
@@ -297,17 +291,10 @@ static void vt_switcher_destroy(struct vt_switcher *s)
     close(vt_switcher_pipe[1]);
 }
 
-static void vt_switcher_poll(struct vt_switcher *s, int timeout_ns)
+static void vt_switcher_handle_event(struct vt_switcher *s)
 {
-    struct pollfd fds[1] = {
-        { .events = POLLIN, .fd = vt_switcher_pipe[0] },
-    };
-    mp_poll(fds, 1, timeout_ns);
-    if (!fds[0].revents)
-        return;
-
     unsigned char event;
-    if (read(fds[0].fd, &event, sizeof(event)) != sizeof(event))
+    if (read(vt_switcher_pipe[0], &event, sizeof(event)) != sizeof(event))
         return;
 
     switch (event) {
@@ -322,8 +309,6 @@ static void vt_switcher_poll(struct vt_switcher *s, int timeout_ns)
         if (ioctl(s->tty_fd, VT_RELDISP, VT_ACKACQ) < 0) {
             MP_ERR(s, "Failed to acquire virtual terminal\n");
         }
-        break;
-    case EVT_INTERRUPT:
         break;
     }
 }
@@ -520,7 +505,8 @@ static void restore_sdr(struct vo_drm_state *drm)
     if (!atomic_ctx)
         return;
 
-    vo_drm_set_hdr_metadata(drm->vo, true);
+    struct pl_color_space sdr = pl_color_space_srgb;
+    vo_drm_set_colorspace_blob(drm->vo, &sdr);
     int ret = drmModeAtomicCommit(drm->fd, atomic_ctx->request, DRM_MODE_ATOMIC_ALLOW_MODESET, drm);
     if (ret)
         MP_VERBOSE(drm, "Failed to commit atomic request: %s\n", mp_strerror(ret));
@@ -597,7 +583,7 @@ static bool setup_crtc(struct vo_drm_state *drm, const drmModeRes *res)
         // iterate all global CRTCs
         for (unsigned int j = 0; j < res->count_crtcs; ++j) {
             // check whether this CRTC works with the encoder
-            if (!(encoder->possible_crtcs & (1 << j)))
+            if (!(encoder->possible_crtcs & (1u << j)))
                 continue;
 
             drm->encoder = encoder;
@@ -648,7 +634,7 @@ static void setup_edid(struct vo_drm_state *drm)
 
     drm->chromaticity = di_edid_get_chromaticity_coords(edid);
 
-    const struct di_edid_cta *cta;
+    const struct di_edid_cta *cta = NULL;
     const struct di_edid_ext *const *exts = di_edid_get_extensions(edid);
     while (*exts && !(cta = di_edid_ext_get_cta(*exts++)));
 
@@ -670,29 +656,6 @@ static void setup_edid(struct vo_drm_state *drm)
 done:
     if (blob)
         drmModeFreePropertyBlob(blob);
-}
-
-static bool target_params_supported_by_display(struct vo_drm_state *drm)
-{
-    if (!drm->chromaticity || !drm->colorimetry || !drm->hdr_static_metadata)
-        return false;
-
-    const struct di_cta_hdr_static_metadata_block *hdr_static_metadata = drm->hdr_static_metadata;
-    enum pl_color_transfer trc = drm->target_params.color.transfer;
-
-    if (!pl_color_transfer_is_hdr(trc) && !hdr_static_metadata->eotfs->traditional_sdr)
-        return false;
-
-    if (pl_color_transfer_is_hdr(trc) && !drm->colorimetry->bt2020_rgb)
-        return false;
-
-    if (trc == PL_COLOR_TRC_PQ && !hdr_static_metadata->eotfs->pq)
-        return false;
-
-    if (trc == PL_COLOR_TRC_HLG && !hdr_static_metadata->eotfs->hlg)
-        return false;
-
-    return true;
 }
 
 static bool all_digits(const char *str)
@@ -1028,10 +991,27 @@ static void drm_pflip_cb(int fd, unsigned int msc, unsigned int sec,
     drm->waiting_for_flip = false;
 }
 
+static void vo_drm_poll_events(struct vo_drm_state *drm, int64_t timeout_ns,
+                               bool wakeups)
+{
+    struct pollfd fds[2] = {
+        { .events = POLLIN, .fd = drm->vt_switcher_active ? vt_switcher_pipe[0] : -1 },
+        { .events = POLLIN, .fd = drm->wakeup_pipe[0] },
+    };
+    mp_poll(fds, wakeups ? 2 : 1, timeout_ns);
+    if (fds[0].revents & POLLIN)
+        vt_switcher_handle_event(&drm->vt_switcher);
+    if (fds[1].revents & POLLIN)
+        mp_flush_wakeup_pipe(drm->wakeup_pipe[0]);
+}
+
 int vo_drm_control(struct vo *vo, int *events, int request, void *arg)
 {
     struct vo_drm_state *drm = vo->drm;
     switch (request) {
+    case VOCTRL_CHECK_EVENTS:
+        vo_drm_poll_events(drm, 0, false);
+        return VO_TRUE;
     case VOCTRL_GET_DISPLAY_FPS: {
         double fps = vo_drm_get_display_fps(drm);
         if (fps <= 0)
@@ -1065,6 +1045,8 @@ bool vo_drm_init(struct vo *vo)
         .mode = {{0}},
         .crtc_id = -1,
         .card_no = -1,
+        .fd = -1,
+        .wakeup_pipe = {-1, -1},
     };
 
     drm->vt_switcher_active = vt_switcher_init(&drm->vt_switcher, drm->log);
@@ -1078,6 +1060,11 @@ bool vo_drm_init(struct vo *vo)
     drm->opts = mp_get_config_group(drm, drm->vo->global, &drm_conf);
 
     drmModeRes *res = NULL;
+    if (mp_make_wakeup_pipe(drm->wakeup_pipe) < 0) {
+        MP_ERR(drm, "Creating wakeup pipe failed: %s\n", mp_strerror(errno));
+        goto err;
+    }
+
     get_primary_device_path(drm);
 
     if (!drm->card_path) {
@@ -1178,7 +1165,13 @@ void vo_drm_uninit(struct vo *vo)
     if (drm->atomic_context)
         drm_atomic_destroy_context(drm->atomic_context);
 
-    close(drm->fd);
+    for (int n = 0; n < 2; n++) {
+        if (drm->wakeup_pipe[n] >= 0)
+            close(drm->wakeup_pipe[n]);
+        drm->wakeup_pipe[n] = -1;
+    }
+    if (drm->fd >= 0)
+        close(drm->fd);
     talloc_free(drm);
     vo->drm = NULL;
 }
@@ -1350,36 +1343,62 @@ static int drm_validate_mode_opt(struct mp_log *log, const struct m_option *opt,
 }
 
 /* Helpers */
+bool vo_drm_color_supported_by_display(struct vo_drm_state *drm, struct pl_color_space color)
+{
+    const struct di_cta_hdr_static_metadata_block *hdr_static_metadata = drm->hdr_static_metadata;
+    enum pl_color_transfer trc = color.transfer;
+
+    if (!pl_color_transfer_is_hdr(trc) && hdr_static_metadata && !hdr_static_metadata->eotfs->traditional_sdr)
+        return false;
+
+    if (pl_color_transfer_is_hdr(trc)) {
+        if (!drm->chromaticity || !drm->colorimetry || !hdr_static_metadata || !drm->colorimetry->bt2020_rgb)
+            return false;
+
+        if (trc == PL_COLOR_TRC_PQ && !hdr_static_metadata->eotfs->pq)
+            return false;
+
+        if (trc == PL_COLOR_TRC_HLG && !hdr_static_metadata->eotfs->hlg)
+            return false;
+    }
+
+    return true;
+}
+
 double vo_drm_get_display_fps(struct vo_drm_state *drm)
 {
     return mode_get_Hz(&drm->mode.mode);
 }
 
-bool vo_drm_set_hdr_metadata(struct vo *vo, bool force_sdr)
+void vo_drm_set_color(struct vo *vo, struct pl_color_space *color)
 {
     struct vo_drm_state *drm = vo->drm;
-    struct mp_image_params target_params = vo_get_target_params(vo);
-    if (!force_sdr && (pl_color_space_equal(&target_params.color, &drm->target_params.color) ||
-        !target_params.w || !target_params.h))
-        return false;
 
+    // Set to sdr if the display doesn't support the colorspace.
+    if (!vo_drm_color_supported_by_display(drm, *color)) {
+        *color = pl_color_space_srgb;
+        pl_color_space_infer(color);
+    }
+    drm->colorspace = *color;
+}
+
+void vo_drm_set_colorspace_blob(struct vo *vo, struct pl_color_space *color)
+{
+    struct vo_drm_state *drm = vo->drm;
     destroy_hdr_blob(drm);
-    drm->target_params = target_params;
-    drm->supported_colorspace = target_params_supported_by_display(drm);
-    bool use_sdr = !drm->supported_colorspace || force_sdr;
 
     // For any HDR, the BT2020 drm colorspace is the only one that works in practice.
     struct drm_atomic_context *atomic_ctx = drm->atomic_context;
-    int colorspace = !use_sdr && pl_color_space_is_hdr(&drm->target_params.color) ?
+    int colorspace = pl_color_space_is_hdr(color) || pl_color_primaries_is_wide_gamut(color->primaries) ?
                      DRM_MODE_COLORIMETRY_BT2020_RGB : DRM_MODE_COLORIMETRY_DEFAULT;
     drm_object_set_property(atomic_ctx->request, atomic_ctx->connector, "Colorspace", colorspace);
 
-    const struct pl_hdr_metadata *hdr = &target_params.color.hdr;
+    const struct pl_hdr_metadata *hdr = &color->hdr;
     struct hdr_output_metadata metadata = {
         .metadata_type = HDMI_STATIC_METADATA_TYPE1,
         .hdmi_metadata_type1.metadata_type = HDMI_STATIC_METADATA_TYPE1,
 
-        .hdmi_metadata_type1.eotf = use_sdr ? HDMI_EOTF_TRADITIONAL_GAMMA_SDR : eotf_map[target_params.color.transfer],
+        .hdmi_metadata_type1.eotf = eotf_map[color->transfer],
 
         .hdmi_metadata_type1.display_primaries[0].x = lrintf(hdr->prim.red.x * DRM_PRIM_FACTOR),
         .hdmi_metadata_type1.display_primaries[0].y = lrintf(hdr->prim.red.y * DRM_PRIM_FACTOR),
@@ -1399,7 +1418,6 @@ bool vo_drm_set_hdr_metadata(struct vo *vo, bool force_sdr)
     };
     drmModeCreatePropertyBlob(drm->fd, &metadata, sizeof(metadata), &drm->hdr.blob_id);
     drm_object_set_property(atomic_ctx->request, atomic_ctx->connector, "HDR_OUTPUT_METADATA", drm->hdr.blob_id);
-    return true;
 }
 
 void vo_drm_set_monitor_par(struct vo *vo)
@@ -1417,13 +1435,9 @@ void vo_drm_set_monitor_par(struct vo *vo)
 void vo_drm_wait_events(struct vo *vo, int64_t until_time_ns)
 {
     struct vo_drm_state *drm = vo->drm;
-    if (drm->vt_switcher_active) {
-        int64_t wait_ns = until_time_ns - mp_time_ns();
-        int64_t timeout_ns = MPCLAMP(wait_ns, 0, MP_TIME_S_TO_NS(10));
-        vt_switcher_poll(&drm->vt_switcher, timeout_ns);
-    } else {
-        vo_wait_default(vo, until_time_ns);
-    }
+    int64_t wait_ns = until_time_ns - mp_time_ns();
+    int64_t timeout_ns = MPCLAMP(wait_ns, 0, MP_TIME_S_TO_NS(10));
+    vo_drm_poll_events(drm, timeout_ns, true);
 }
 
 void vo_drm_wait_on_flip(struct vo_drm_state *drm)
@@ -1445,6 +1459,5 @@ void vo_drm_wait_on_flip(struct vo_drm_state *drm)
 void vo_drm_wakeup(struct vo *vo)
 {
     struct vo_drm_state *drm = vo->drm;
-    if (drm->vt_switcher_active)
-        vt_switcher_interrupt_poll(&drm->vt_switcher);
+    (void)write(drm->wakeup_pipe[1], &(char){0}, 1);
 }

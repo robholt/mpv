@@ -53,7 +53,6 @@ struct mpgl_osd_part {
     struct ra_tex *texture;
     int w, h;
     int num_subparts;
-    int prev_num_subparts;
     struct sub_bitmap *subparts;
     int num_vertices;
     struct vertex *vertices;
@@ -66,7 +65,6 @@ struct mpgl_osd {
     struct mpgl_osd_part *parts[MAX_OSD_PARTS];
     const struct ra_format *fmt_table[SUBBITMAP_COUNT];
     bool formats[SUBBITMAP_COUNT];
-    bool change_flag; // for reporting to API user only
     // temporary
     int stereo_mode;
     struct mp_osd_res osd_res;
@@ -81,7 +79,6 @@ struct mpgl_osd *mpgl_osd_init(struct ra *ra, struct mp_log *log,
         .log = log,
         .osd = osd,
         .ra = ra,
-        .change_flag = true,
         .scratch = talloc_zero_size(ctx, 1),
     };
 
@@ -194,7 +191,6 @@ static void gen_osd_cb(void *pctx, struct sub_bitmaps *imgs)
             ok = false;
 
         osd->change_id = imgs->change_id;
-        ctx->change_flag = true;
     }
     osd->num_subparts = ok ? imgs->num_parts : 0;
 
@@ -273,17 +269,6 @@ static void generate_verts(struct mpgl_osd_part *part, struct gl_transform t)
     }
 }
 
-// number of screen divisions per axis (x=0, y=1) for the current 3D mode
-static void get_3d_side_by_side(int stereo_mode, int div[2])
-{
-    div[0] = div[1] = 1;
-    switch (stereo_mode) {
-    case MP_STEREO3D_SBS2L:
-    case MP_STEREO3D_SBS2R: div[0] = 2; break;
-    case MP_STEREO3D_AB2R:
-    case MP_STEREO3D_AB2L:  div[1] = 2; break;
-    }
-}
 
 void mpgl_osd_draw_finish(struct mpgl_osd *ctx, int index,
                           struct gl_shader_cache *sc, const struct ra_fbo *fbo)
@@ -291,7 +276,7 @@ void mpgl_osd_draw_finish(struct mpgl_osd *ctx, int index,
     struct mpgl_osd_part *part = ctx->parts[index];
 
     int div[2];
-    get_3d_side_by_side(ctx->stereo_mode, div);
+    mp_get_3d_side_by_side(ctx->stereo_mode, div);
 
     part->num_vertices = 0;
 
@@ -319,7 +304,7 @@ void mpgl_osd_draw_finish(struct mpgl_osd *ctx, int index,
 static void set_res(struct mpgl_osd *ctx, struct mp_osd_res res, int stereo_mode)
 {
     int div[2];
-    get_3d_side_by_side(stereo_mode, div);
+    mp_get_3d_side_by_side(stereo_mode, div);
 
     res.w /= div[0];
     res.h /= div[1];
@@ -336,15 +321,6 @@ void mpgl_osd_generate(struct mpgl_osd *ctx, struct mp_osd_res res, double pts,
 
     osd_draw(ctx->osd, ctx->osd_res, pts, draw_flags, ctx->formats, gen_osd_cb, ctx);
     ctx->stereo_mode = stereo_mode;
-
-    // Parts going away does not necessarily result in gen_osd_cb() being called
-    // (not even with num_parts==0), so check this separately.
-    for (int n = 0; n < MAX_OSD_PARTS; n++) {
-        struct mpgl_osd_part *part = ctx->parts[n];
-        if (part->num_subparts !=  part->prev_num_subparts)
-            ctx->change_flag = true;
-        part->prev_num_subparts = part->num_subparts;
-    }
 }
 
 // See osd_resize() for remarks. This function is an optional optimization too.
@@ -352,12 +328,4 @@ void mpgl_osd_resize(struct mpgl_osd *ctx, struct mp_osd_res res, int stereo_mod
 {
     set_res(ctx, res, stereo_mode);
     osd_resize(ctx->osd, ctx->osd_res);
-}
-
-bool mpgl_osd_check_change(struct mpgl_osd *ctx, struct mp_osd_res *res,
-                           double pts)
-{
-    ctx->change_flag = false;
-    mpgl_osd_generate(ctx, *res, pts, 0, 0);
-    return ctx->change_flag;
 }

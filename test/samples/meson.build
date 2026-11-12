@@ -2,7 +2,7 @@
 video = custom_target('video.mkv',
     output: 'video.mkv',
     command: [ffmpeg, '-v', 'error', '-y', '-f', 'lavfi', '-i',
-              'testsrc=duration=2:size=1280x720', '@OUTPUT@'],
+              'testsrc=duration=2:size=1280x720', '-c:v', 'mpeg2video', '@OUTPUT@'],
 )
 
 audio = custom_target('audio.flac',
@@ -12,6 +12,7 @@ audio = custom_target('audio.flac',
 )
 
 sub = join_paths(source_root, 'test', 'samples', 'sub.srt')
+img_sub = join_paths(source_root, 'test', 'samples', 'img_sub.idx')
 
 common_args = ['-v', 'error', '-y', '-i', video, '-i', audio,
                '-f', 'srt', '-i', sub, '-c', 'copy',
@@ -40,6 +41,21 @@ samples = {
          '-c', 'copy', '-map', '0:0', '-map', '1:0', '-map', '2:0', '-map', '3:0', '-metadata:s:s:0',
          'language=ger', '-metadata:s:s:1', 'language=eng', '-disposition:s:0', 'default',
          '-disposition:s:1', 'default', '@OUTPUT@'],
+    'locale_forced.mkv':
+        [ffmpeg, '-v', 'error', '-y', '-i', video, '-i', audio, '-f', 'srt', '-i', sub, '-i', sub,
+         '-c', 'copy', '-map', '0:0', '-map', '1:0', '-map', '2:0', '-map', '3:0', '-metadata:s:s:0',
+         'language=ger', '-metadata:s:s:1', 'language=eng', '-disposition:s:0', 'default+forced',
+         '-disposition:s:1', 'default+forced', '@OUTPUT@'],
+    'locale_complex.mkv':
+        [ffmpeg, '-v', 'error', '-y', '-i', video, '-i', audio, '-f', 'srt', '-i', sub, '-c', 'copy',
+         '-map', '0:0', '-map', '1:0', '-map', '1:0', '-map', '1:0', '-map', '1:0',
+         '-map', '2:0', '-map', '2:0', '-map', '2:0', '-map', '2:0', '-map', '2:0', '-map', '2:0',
+         '-metadata:s:a:0', 'language=eng', '-metadata:s:a:1', 'language=jpn',
+         '-metadata:s:a:2', 'language=ger', '-metadata:s:a:3', 'language=pol',
+         '-metadata:s:s:0', 'language=eng', '-metadata:s:s:1', 'language=jpn', '-metadata:s:s:2', 'language=pol',
+         '-metadata:s:s:3', 'language=eng', '-metadata:s:s:4', 'language=ger', '-metadata:s:s:5', 'language=eng',
+         '-disposition:s:1', 'forced', '-disposition:s:2', 'default+forced', '-disposition:s:3', 'default+forced',
+         '-disposition:s:4', 'default', '-disposition:s:5', 'default+forced', '@OUTPUT@'],
     'multilang.mkv':
         [ffmpeg, '-v', 'error', '-y', '-i', video, '-i', audio, '-i', audio, '-i', audio, '-i', audio,
          '-f', 'srt', '-i', sub, '-i', sub, '-i', sub, '-i', sub, '-c', 'copy', '-map', '0:0',
@@ -57,6 +73,11 @@ samples = {
          'language=eng', '-metadata:s:s:2', 'language=eng', '-metadata:s:s:3', 'language=eng',
          '-disposition:s:0', 'default', '-disposition:s:1', 'forced', '-disposition:s:3', 'default',
          '@OUTPUT@'],
+    'multiprogram.ts':
+        [ffmpeg, '-v', 'error', '-y', '-i', video, '-f', 'vobsub', '-i', img_sub,
+         '-c:v', 'copy', '-c:s', 'dvbsub', '-map', '0:0', '-map', '1:0', '-map', '0:0', '-map', '1:0', '-map', '1:0',
+         '-metadata:s:s:0', 'language=eng', '-metadata:s:s:1', 'language=jpn', '-metadata:s:s:2', 'language=fra',
+         '-program', 'program_num=1:st=0:st=1:st=4', '-program', 'program_num=2:st=2:st=3:st=4', '@OUTPUT@'],
 }
 
 foreach name, cmd: samples
@@ -65,7 +86,7 @@ foreach name, cmd: samples
         depends: [video, audio],
         command: cmd,
     )
-    env = name == 'locale.mkv' ? 'LANG=C' : []
+    env = name.startswith('locale') ? 'LANG=C' : []
     testname = 'libmpv-test-' + name
     exe = executable(testname, '../libmpv_test_track_selection.c',
                      include_directories: incdir, dependencies: libmpv_dep)
@@ -78,6 +99,18 @@ sdh_default = join_paths(source_root, 'test', 'samples', 'sdh_default.srt')
 sdh_mixed = join_paths(source_root, 'test', 'samples', 'sdh_mixed.srt')
 sdh_all = join_paths(source_root, 'test', 'samples', 'sdh_all.srt')
 sdh_mismatch = join_paths(source_root, 'test', 'samples', 'sdh_mismatch.srt')
+sdh_null = join_paths(source_root, 'test', 'samples', 'sdh_null.srt')
+sdh_null_text = join_paths(source_root, 'test', 'samples', 'sdh_null_text.srt')
+
+patch_null = '''
+import subprocess, sys
+out, needle, pos = sys.argv[1], sys.argv[2].encode(), int(sys.argv[3])
+subprocess.check_call(sys.argv[4:])
+with open(out, 'r+b') as f:
+    data = f.read()
+    f.seek(0)
+    f.write(data.replace(needle, needle[:pos] + bytes(1) + needle[pos + 1:], 1))
+'''
 
 sdh_samples = {
     'sdh_default':
@@ -95,6 +128,16 @@ sdh_samples = {
     'sdh_mismatch':
         [ffmpeg, '-v', 'error', '-y', '-i', audio, '-f', 'srt',
         '-i', sdh_mismatch, '-map', '0:0', '-map', '1:0', '-disposition:s:0',
+        'default', '@OUTPUT@'],
+    'sdh_null':
+        [python, '-c', patch_null, '@OUTPUT@', '0,0,Default,,', '7',
+        ffmpeg, '-v', 'error', '-y', '-i', audio, '-f', 'srt',
+        '-i', sdh_null, '-map', '0:0', '-map', '1:0', '-disposition:s:0',
+        'default', '@OUTPUT@'],
+    'sdh_null_text':
+        [python, '-c', patch_null, '@OUTPUT@', 'real text', '4',
+        ffmpeg, '-v', 'error', '-y', '-i', audio, '-f', 'srt',
+        '-i', sdh_null_text, '-map', '0:0', '-map', '1:0', '-disposition:s:0',
         'default', '@OUTPUT@'],
 }
 

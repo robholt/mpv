@@ -31,6 +31,7 @@ static void apppend_langs(char ***ret, size_t *ret_count, wchar_t *buf, ULONG co
         char *item = mp_to_utf8(NULL, buf + pos);
         MP_TARRAY_APPEND(NULL, *ret, *ret_count, item);
         talloc_steal(*ret, item);
+        pos += wcslen(buf + pos) + 1;
     }
 }
 
@@ -39,21 +40,13 @@ char **mp_get_user_langs(void)
     char **ret = NULL;
     size_t ret_count = 0;
     wchar_t *buf = NULL;
-    ULONG size, count;
+    ULONG size = 0, count;
 
     if (!GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &count, NULL, &size))
         goto done;
 
     MP_TARRAY_GROW(NULL, buf, size);
     if (GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &count, buf, &size))
-        apppend_langs(&ret, &ret_count, buf, count);
-
-    size = 0;
-    if (!GetSystemPreferredUILanguages(MUI_LANGUAGE_NAME, &count, NULL, &size))
-        goto done;
-
-    MP_TARRAY_GROW(NULL, buf, size);
-    if (GetSystemPreferredUILanguages(MUI_LANGUAGE_NAME, &count, buf, &size))
         apppend_langs(&ret, &ret_count, buf, count);
 
 done:

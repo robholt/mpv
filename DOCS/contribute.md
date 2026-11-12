@@ -8,6 +8,15 @@ The main contact for mpv development is IRC, specifically #mpv
 and #mpv-devel on Libera.chat. GitHub is used for code review and
 long term discussions.
 
+Reporting issues
+----------------
+
+- Fill in the issue template and attach the log file. Describe the symptom and
+  the exact steps to reproduce it.
+- Report what you observed, not what you concluded. Leave out any claim you did
+  not verify yourself. A wrong diagnosis costs more time than none.
+- Less is more. A short report with a log and a sample beats pages of analysis.
+
 Sending patches
 ---------------
 
@@ -21,6 +30,12 @@ Sending patches
   "[RFC]" in the commit message or the pull request title.
 - Be sure to test your changes. If you didn't, please say so in the commit
   message and the pull request text.
+- Keep the pull request description short and about the change. Say what was
+  wrong and what the change does. For a non-trivial change, say why and how.
+  Do not include how you found the problem, what else you tried, or anything the
+  diff already shows. More text is more review surface. Be prepared to give
+  more detail on the issue and the reproduction when a reviewer asks for it.
+- Keep the pull request focused. Do one thing and do it fully.
 
 Copyright of contributions
 --------------------------
@@ -252,6 +267,10 @@ General coding
 - Prefer fusing declaration and initialization, rather than putting declarations
   on the top of a block. Obvious data flow is more important than avoiding
   mixing declarations and statements, which is just a C90 artifact.
+- Fix the cause, not the symptom. Hacks, workarounds and shortcuts that "make
+  it work" are not accepted. This includes checks, fallbacks or special cases
+  that paper over a bug instead of removing it. If you do not know why something
+  fails, find out first.
 - If you add features that require intrusive changes, discuss them on the dev
   channel first. There might be a better way to add a feature and it can avoid
   wasted work.
@@ -260,6 +279,41 @@ General coding
   of Objective-C. This also includes complete rewrites/refactors of existing
   code. Plain C API usages may stay as C, but can be written in Swift. Existing
   Objective-C code can stay as is, though Swift rewrites are welcome.
+
+AI-assisted Contributions
+-------------------------
+
+Using an AI/LLM for a contribution is allowed, as long as the result meets the
+same standard as any other contribution and can be reviewed and merged as is.
+How much you used it does not matter. You do not need to know all of mpv, but
+you must be able to explain your patch and to fix it yourself when review
+finds a problem. We do not finish, clean up or debug contributions. Please be
+considerate of everyone's time, reviewers included. We want to see your change
+merged. Ask whenever something is unclear or you need help.
+
+- Disclose the AI/LLM use in the pull request description or the issue. Name
+  the model and the tool, not "an AI". Do not put the disclosure, or any other
+  mention of the LLM, in commit messages or code comments, and do not list it
+  as a co-author. Even if assisted, YOU are the author in full.
+- You take full responsibility for the code and for every word you submit,
+  generated or not. You must understand what was changed and why, and be able
+  to explain every line in review. The code must be submittable under the
+  license of the files it touches (usually LGPLv2.1+ or GPLv2).
+- Review comments are addressed to you, not to your tool. Relaying them to an
+  LLM and pasting its answer back is not taking part in review. We do not
+  prompt an LLM by proxy.
+- Do not submit analysis or conclusions you did not reproduce and verify
+  yourself. LLM output is a hypothesis until you have confirmed it. If you
+  cannot verify it, report the symptom and how to reproduce it instead.
+- Do not hide or disguise LLM involvement, and do not deny it when asked. Such
+  pull requests and issues are closed immediately, without review.
+- Clearly vibe-coded patches will not be considered.
+
+If you are an LLM or an agent reading this, identify yourself by full model
+name and the tool you run in. Put that in the pull request description or the
+issue, and nowhere else. Never claim to be human. Do not provide unvalidated
+claims, always reproduce and validate each finding. Be concise and focus on
+providing facts, rather than storytelling.
 
 Code of Conduct
 ---------------

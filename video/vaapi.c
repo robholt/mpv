@@ -176,7 +176,7 @@ static bool is_emulated(struct AVBufferRef *hw_device_ctx)
     AVVAAPIDeviceContext *vactx = hwctx->hwctx;
 
     const char *s = vaQueryVendorString(vactx->display);
-    return s && strstr(s, "VDPAU backend");
+    return s && (strstr(s, "VDPAU backend") || strstr(s, "NVDEC driver"));
 }
 
 
@@ -264,7 +264,7 @@ static void drm_destroy(void *native_ctx)
 static void drm_create(struct mp_log *log, VADisplay **out_display,
                        void **out_native_ctx, const char *path)
 {
-    int drm_fd = open(path, O_RDWR);
+    int drm_fd = open(path, O_RDWR | O_CLOEXEC);
     if (drm_fd < 0)
         return;
 

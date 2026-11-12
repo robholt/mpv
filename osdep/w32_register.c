@@ -383,6 +383,11 @@ static void w32_register(struct MPContext *mpctx)
     REGISTER_AUTOPLAY_HANDLER("dvd", "DVDMovie", "Play DVD movie");
 #endif
 
+#if HAVE_DVDA
+    // Register DVD-Audio handler
+    REGISTER_AUTOPLAY_HANDLER("dvda", "DVDAudio", "Play DVD-Audio");
+#endif
+
 #if HAVE_LIBBLURAY
     // Register Blu-ray handler
     REGISTER_AUTOPLAY_HANDLER("bluray", "BluRay", "Play Blu-ray movie");
@@ -413,12 +418,12 @@ static void w32_register(struct MPContext *mpctx)
     reg_add_str(log, root, KEY_MPV_UNINSTALL, L"URLInfoAbout", L"https://mpv.io");
     reg_add_str(log, root, KEY_MPV_UNINSTALL, L"URLUpdateInfo", L"https://mpv.io/installation");
 
-    if (SUCCEEDED(PathCchRemoveFileSpec(mpv_path, MP_PATH_MAX)))
-        reg_add_str(log, root, KEY_MPV_UNINSTALL, L"InstallLocation", mpv_path);
-
     uint64_t size = get_file_size(mpv_path);
     if (size)
-        reg_add_dwr(log, root, KEY_MPV_UNINSTALL, L"EstimatedSize", size);
+        reg_add_dwr(log, root, KEY_MPV_UNINSTALL, L"EstimatedSize", size / 1024);
+
+    if (SUCCEEDED(PathCchRemoveFileSpec(mpv_path, MP_PATH_MAX)))
+        reg_add_str(log, root, KEY_MPV_UNINSTALL, L"InstallLocation", mpv_path);
 
     mp_msg(log, MSGL_INFO, "mpv has been successfully registered.\n");
     mp_msg(log, MSGL_INFO, "Note: The mpv binary has not been copied or moved. Please keep it in the current directory.\n");
@@ -444,6 +449,7 @@ static void w32_unregister(struct MPContext *mpctx)
     reg_del(log, root, KEY_MPV_PROG_ID("bluray"), NULL);
     reg_del(log, root, KEY_MPV_PROG_ID("cdda"), NULL);
     reg_del(log, root, KEY_MPV_PROG_ID("dvd"), NULL);
+    reg_del(log, root, KEY_MPV_PROG_ID("dvda"), NULL);
     reg_del(log, root, KEY_MPV_PROG_ID("file"), NULL);
     reg_del(log, root, KEY_MPV_PROG_ID("url"), NULL);
 
@@ -453,6 +459,9 @@ static void w32_unregister(struct MPContext *mpctx)
     reg_del(log, root, KEY_AUTOPLAY L"\\Handlers\\MpvPlayDVDMovieOnArrival", NULL);
     reg_del(log, root, KEY_AUTOPLAY L"\\EventHandlers\\PlayDVDMovieOnArrival",
             L"MpvPlayDVDMovieOnArrival");
+    reg_del(log, root, KEY_AUTOPLAY L"\\Handlers\\MpvPlayDVDAudioOnArrival", NULL);
+    reg_del(log, root, KEY_AUTOPLAY L"\\EventHandlers\\PlayDVDAudioOnArrival",
+            L"MpvPlayDVDAudioOnArrival");
     reg_del(log, root, KEY_AUTOPLAY L"\\Handlers\\MpvPlayBluRayOnArrival", NULL);
     reg_del(log, root, KEY_AUTOPLAY L"\\EventHandlers\\PlayBluRayOnArrival",
             L"MpvPlayBluRayOnArrival");

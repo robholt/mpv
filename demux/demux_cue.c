@@ -62,7 +62,7 @@ static bool try_open(struct timeline *tl, char *filename)
 
     struct demuxer_params p = {
         .stream_flags = tl->stream_origin,
-        .depth = tl->demuxer ? tl->demuxer->depth + 1 : 0,
+        .depth = tl->demuxer->depth + 1,
     };
 
     struct demuxer *d = demux_open_url(filename, &p, tl->cancel, tl->global);
@@ -92,11 +92,10 @@ static bool open_source(struct timeline *tl, char *filename)
 
     struct bstr dirname = mp_dirname(tl->demuxer->filename);
 
-    struct bstr base_filename = bstr0(mp_basename(filename));
-    if (!base_filename.len) {
+    if (!filename[0]) {
         MP_WARN(tl, "CUE: Invalid audio filename in .cue file!\n");
     } else {
-        char *fullname = mp_path_join_bstr(ctx, dirname, base_filename);
+        char *fullname = mp_path_join_bstr(ctx, dirname, bstr0(filename));
         if (try_open(tl, fullname)) {
             res = true;
             goto out;
@@ -109,7 +108,7 @@ static bool open_source(struct timeline *tl, char *filename)
     // are renamed.
 
     struct bstr cuefile =
-        bstr_strip_ext(bstr0(mp_basename(tl->demuxer->filename)));
+        mp_strip_ext(bstr0(mp_basename(tl->demuxer->filename)));
 
     DIR *d = opendir(bstrdup0(ctx, dirname));
     if (!d)

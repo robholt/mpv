@@ -104,14 +104,14 @@ static MP_THREAD_VOID script_thread(void *p)
 
 static int64_t mp_load_script(struct MPContext *mpctx, const char *fname)
 {
-    char *ext = mp_splitext(fname, NULL);
-    if (ext && strcasecmp(ext, "disable") == 0)
+    bstr ext = mp_get_ext(bstr0(fname));
+    if (bstrcasecmp0(ext, "disable") == 0)
         return 0;
 
     void *tmp = talloc_new(NULL);
 
     const char *path = NULL;
-    char *script_name = NULL;
+    const char *script_name = NULL;
     const struct mp_scripting *backend = NULL;
 
     struct stat s;
@@ -138,13 +138,13 @@ static int64_t mp_load_script(struct MPContext *mpctx, const char *fname)
             return -1;
         }
 
-        script_name = talloc_strdup(tmp, path);
-        mp_path_strip_trailing_separator(script_name);
-        script_name = mp_basename(script_name);
+        char *path_dup = talloc_strdup(tmp, path);
+        mp_path_strip_trailing_separator(path_dup);
+        script_name = mp_basename(path_dup);
     } else {
         for (int n = 0; scripting_backends[n]; n++) {
             const struct mp_scripting *b = scripting_backends[n];
-            if (ext && strcasecmp(ext, b->file_ext) == 0) {
+            if (bstrcasecmp0(ext, b->file_ext) == 0) {
                 backend = b;
                 break;
             }
@@ -167,7 +167,7 @@ static int64_t mp_load_script(struct MPContext *mpctx, const char *fname)
         // Create the client before creating the thread; otherwise a race
         // condition could happen, where MPContext is destroyed while the
         // thread tries to create the client.
-        .client = mp_new_client(mpctx->clients, script_name),
+        .client = mp_new_weak_client(mpctx->clients, script_name),
     };
 
     talloc_free(tmp);
@@ -179,7 +179,6 @@ static int64_t mp_load_script(struct MPContext *mpctx, const char *fname)
         return -1;
     }
 
-    mp_client_set_weak(arg->client);
     arg->log = mp_client_get_log(arg->client);
     int64_t id = mpv_client_id(arg->client);
 
@@ -212,7 +211,7 @@ static int compare_filename(const void *pa, const void *pb)
 {
     char *a = (char *)pa;
     char *b = (char *)pb;
-    return strcmp(a, b);
+    return strcasecmp(a, b);
 }
 
 static char **list_script_files(void *talloc_ctx, char *path)
@@ -270,7 +269,11 @@ void mp_load_builtin_scripts(struct MPContext *mpctx)
     load_builtin_script(mpctx, 5, mpctx->opts->lua_load_select, "@select.lua");
     load_builtin_script(mpctx, 6, mpctx->opts->lua_load_positioning, "@positioning.lua");
     load_builtin_script(mpctx, 7, mpctx->opts->lua_load_commands, "@commands.lua");
-    load_builtin_script(mpctx, 8, mpctx->opts->lua_load_context_menu, "@context_menu.lua");
+
+    // select.lua uses context_menu.lua in D3D11 exclusive fullscreen.
+    struct m_config_option *co = m_config_get_co(mpctx->mconfig, bstr0("d3d11-exclusive-fs"));
+    bool context_menu = mpctx->opts->lua_load_context_menu || (co && *(bool *)co->data);
+    load_builtin_script(mpctx, 8, context_menu, "@context_menu.lua");
 }
 
 bool mp_load_scripts(struct MPContext *mpctx)

@@ -50,6 +50,7 @@
 #include "f_async_queue.h"
 #include "f_decoder_wrapper.h"
 #include "f_demux_in.h"
+#include "f_lavfi.h"
 #include "filter_internal.h"
 
 struct dec_queue_opts {
@@ -220,6 +221,7 @@ struct priv {
     // --- Specific access depending on threading stuff.
     struct mp_async_queue *queue; // decoded frame output queue
     struct mp_dispatch_queue *dec_dispatch; // non-NULL if decoding thread used
+    bool eof_output;    // an EOF went out: the stream is done for this decoder
     bool dec_thread_lock; // debugging (esp. for no-thread case)
     mp_thread dec_thread;
     bool dec_thread_valid;
@@ -232,6 +234,17 @@ struct priv {
     bool pts_reset;
     int attempt_framedrops; // try dropping this many frames
     int dropped_frames; // total frames _probably_ dropped
+    int extra_hw_frames; // extra surfaces retained outside the decoder
+
+    // --- Decoder group.
+    //     The group of decoders this wrapper manages. Decodes dependent streams
+    //     which then can be passed further for processing. Currently, the
+    //     supported configuration is multiple video decoders into single output
+    //     pin that which has output merged by specified mp_lavfi graph.
+    //     When is_group is true, the wrapper acts as a manager of the group.
+    bool is_group;
+    struct mp_decoder_wrapper **children;
+    int num_children;
 };
 
 static int decoder_list_help(struct mp_log *log, const m_option_t *opt,
@@ -250,7 +263,7 @@ static int decoder_list_help(struct mp_log *log, const m_option_t *opt,
         return M_OPT_EXIT;
     }
     if (strcmp(opt->name, "audio-spdif") == 0) {
-        mp_info(log, "Choices: ac3,dts-hd,dts (and possibly more)\n");
+        mp_info(log, "Choices: ac3,dts-hd,dts,dsd (and possibly more)\n");
         return M_OPT_EXIT;
     }
     return 1;
@@ -334,6 +347,7 @@ static void decf_reset(struct mp_filter *f)
     mp_mutex_unlock(&p->cache_lock);
 
     p->coverart_returned = 0;
+    p->eof_output = false;
 
     for (int n = 0; n < p->num_reverse_queue; n++)
         mp_frame_unref(&p->reverse_queue[n]);
@@ -349,6 +363,18 @@ int mp_decoder_wrapper_control(struct mp_decoder_wrapper *d,
 {
     struct priv *p = d->f->priv;
     int res = CONTROL_UNKNOWN;
+    if (p->is_group) {
+        mp_assert(p->num_children);
+        for (int i = 0; i < p->num_children; i++) {
+            // Forward control to all children, but get the result from the last
+            // one. Currently it is used only for same decoders, so we care only
+            // about the control, and the result for GET can be whatever.
+            res = mp_decoder_wrapper_control(p->children[i], cmd, arg);
+            if (i == p->num_children - 1)
+                return res;
+        }
+        return res;
+    }
     thread_lock(p);
     if (cmd == VDCTRL_GET_HWDEC) {
         res = update_cached_values(p);
@@ -430,6 +456,14 @@ static bool reinit_decoder(struct priv *p)
                 list = spdif;
             } else {
                 talloc_free(spdif);
+                struct mp_decoder_list *dsd =
+                    select_dsd_codec(p->codec->codec, p->opts->audio_spdif);
+                if (dsd->num_entries) {
+                    driver = &ad_dsd;
+                    list = dsd;
+                } else {
+                    talloc_free(dsd);
+                }
             }
         }
     }
@@ -455,8 +489,8 @@ static bool reinit_decoder(struct priv *p)
 
         p->decoder = driver->create(p->decf, p->codec, sel->decoder);
         if (p->decoder) {
-            p->codec->decoder = talloc_strdup(p, sel->decoder);
-            p->codec->decoder_desc = talloc_strdup(p, sel->desc && sel->desc[0] ? sel->desc : NULL);
+            p->codec->decoder = talloc_strdup(p->codec, sel->decoder);
+            p->codec->decoder_desc = talloc_strdup(p->codec, sel->desc && sel->desc[0] ? sel->desc : NULL);
             MP_VERBOSE(p, "Selected decoder: %s", sel->decoder);
             if (p->codec->decoder_desc)
                 MP_VERBOSE(p, " - %s", p->codec->decoder_desc);
@@ -470,6 +504,16 @@ static bool reinit_decoder(struct priv *p)
     if (!p->decoder) {
         MP_ERR(p, "Failed to initialize a decoder for codec '%s'.\n",
                p->codec->codec ? p->codec->codec : "<?>");
+    }
+
+    if (p->decoder && p->decoder->control) {
+        mp_mutex_lock(&p->cache_lock);
+        int extra_hw_frames = p->extra_hw_frames;
+        mp_mutex_unlock(&p->cache_lock);
+        if (extra_hw_frames > 0) {
+            p->decoder->control(p->decoder->f, VDCTRL_SET_EXTRA_HW_FRAMES,
+                                &extra_hw_frames);
+        }
     }
 
     update_cached_values(p);
@@ -487,10 +531,30 @@ static bool decoder_wrapper_reinit(struct mp_decoder_wrapper *d)
 bool mp_decoder_wrapper_reinit(struct mp_decoder_wrapper *d)
 {
     struct priv *p = d->f->priv;
+    if (p->is_group) {
+        for (int i = 0; i < p->num_children; i++) {
+            if (!mp_decoder_wrapper_reinit(p->children[i]))
+                return false;
+        }
+        return true;
+    }
     thread_lock(p);
     bool res = reinit_decoder(p);
     thread_unlock(p);
     return res;
+}
+
+void mp_decoder_wrapper_set_extra_hw_frames(struct mp_decoder_wrapper *d, int n)
+{
+    struct priv *p = d->f->priv;
+    if (p->is_group) {
+        for (int i = 0; i < p->num_children; i++)
+            mp_decoder_wrapper_set_extra_hw_frames(p->children[i], n);
+        return;
+    }
+    mp_mutex_lock(&p->cache_lock);
+    p->extra_hw_frames = n;
+    mp_mutex_unlock(&p->cache_lock);
 }
 
 void mp_decoder_wrapper_set_frame_drops(struct mp_decoder_wrapper *d, int num)
@@ -547,6 +611,12 @@ bool mp_decoder_wrapper_get_pts_reset(struct mp_decoder_wrapper *d)
 void mp_decoder_wrapper_set_play_dir(struct mp_decoder_wrapper *d, int dir)
 {
     struct priv *p = d->f->priv;
+    if (p->is_group) {
+        for (int i = 0; i < p->num_children; i++)
+            mp_decoder_wrapper_set_play_dir(p->children[i], dir);
+        p->play_dir = dir;
+        return;
+    }
     thread_lock(p);
     p->play_dir = dir;
     thread_unlock(p);
@@ -610,7 +680,8 @@ static void fix_image_params(struct priv *p,
     if (m.p_w <= 0 || m.p_h <= 0)
         m.p_w = m.p_h = 1;
 
-    m.stereo3d = p->codec->stereo_mode;
+    if (!m.stereo3d)
+        m.stereo3d = p->codec->stereo_mode;
 
     if (!mp_rect_equals(&p->codec->crop, &(struct mp_rect){0})) {
         struct mp_rect crop = p->codec->crop;
@@ -865,6 +936,11 @@ static void process_output_frame(struct priv *p, struct mp_frame frame)
 void mp_decoder_wrapper_set_start_pts(struct mp_decoder_wrapper *d, double pts)
 {
     struct priv *p = d->f->priv;
+    if (p->is_group) {
+        for (int i = 0; i < p->num_children; i++)
+            mp_decoder_wrapper_set_start_pts(p->children[i], pts);
+        return;
+    }
     p->start_pts = pts;
 }
 
@@ -884,6 +960,11 @@ static void feed_packet(struct priv *p)
         return;
 
     if (p->decoded_coverart.type)
+        return;
+
+    // Don't read after EOF was output. If the stream continues, the player
+    // creates a new decoder.
+    if (p->eof_output)
         return;
 
     if (!p->packet.type && !p->new_segment) {
@@ -995,7 +1076,12 @@ static void read_frame(struct priv *p)
     struct mp_pin *pin = p->decf->ppins[0];
     struct mp_frame frame = {0};
 
-    if (!p->decoder || !mp_pin_in_needs_data(pin))
+    if (!p->decoder) {
+        if (mp_pin_in_needs_data(pin))
+            mp_pin_in_write(pin, MP_EOF_FRAME);
+        return;
+    }
+    if (!mp_pin_in_needs_data(pin))
         return;
 
     if (p->decoded_coverart.type) {
@@ -1088,6 +1174,7 @@ static void read_frame(struct priv *p)
 
 output_frame:
     process_output_frame(p, frame);
+    p->eof_output = frame.type == MP_FRAME_EOF;
     mp_pin_in_write(pin, frame);
 }
 
@@ -1202,6 +1289,81 @@ static void onlock_dec_thread(void *ptr)
     mp_filter_graph_interrupt(p->dec_root_filter);
 }
 
+// Build the multi-decoder + libavfilter merge subgraph for a stream group
+// track.
+static bool init_group_decoder(struct priv *p, struct mp_filter *public_f)
+{
+    struct sh_stream_group *g = p->header->group;
+
+    p->is_group = true;
+    p->fps = p->header->codec->fps;
+
+    // Currently only lavfi merge is supported, this can be extended if needed.
+    if (g->num_members < 1 || !g->lavfi_graph) {
+        MP_ERR(p, "Stream group is missing members or filter graph.\n");
+        return false;
+    }
+
+    mp_require(!public_f->stream_info);
+    struct mp_stream_info *parent_info = mp_filter_find_stream_info(public_f);
+    struct mp_stream_info *group_info = talloc_zero(p, struct mp_stream_info);
+    if (parent_info)
+        *group_info = *parent_info;
+    group_info->force_swdec = true;
+    public_f->stream_info = group_info;
+
+    enum mp_frame_type ftype;
+    switch (p->header->type) {
+    case STREAM_VIDEO: ftype = MP_FRAME_VIDEO; break;
+    case STREAM_AUDIO: ftype = MP_FRAME_AUDIO; break;
+    default:
+        MP_ERR(p, "Stream group has unsupported media type.\n");
+        return false;
+    }
+
+    struct mp_lavfi *lavfi = mp_lavfi_create_graph(public_f, ftype, false,
+                                                   NULL, NULL, g->lavfi_graph);
+    if (!lavfi) {
+        MP_ERR(p, "Failed to create stream group filter graph: %s\n",
+               g->lavfi_graph);
+        return false;
+    }
+
+    for (int i = 0; i < g->num_members; i++) {
+        struct sh_stream *m = g->members[i];
+        if (!m) {
+            MP_ERR(p, "Stream group member %d is NULL\n", i);
+            return false;
+        }
+        if (m->type != p->header->type) {
+            MP_ERR(p, "Stream group member %d has mismatching media type.\n", i);
+            return false;
+        }
+
+        struct mp_decoder_wrapper *child = mp_decoder_wrapper_create(public_f, m);
+        if (!child)
+            return false;
+        MP_TARRAY_APPEND(p, p->children, p->num_children, child);
+
+        char *pad = mp_tprintf(16, "%d", i);
+        struct mp_pin *in_pin = mp_filter_get_named_pin(lavfi->f, pad);
+        if (!in_pin) {
+            MP_ERR(p, "Stream group filter graph is missing input '%s'\n", pad);
+            return false;
+        }
+        mp_pin_connect(in_pin, child->f->pins[0]);
+    }
+
+    struct mp_pin *out_pin = mp_filter_get_named_pin(lavfi->f, "out");
+    if (!out_pin) {
+        MP_ERR(p, "Stream group filter graph is missing output 'out'\n");
+        return false;
+    }
+    mp_pin_connect(public_f->ppins[0], out_pin);
+
+    return true;
+}
+
 struct mp_decoder_wrapper *mp_decoder_wrapper_create(struct mp_filter *parent,
                                                      struct sh_stream *src)
 {
@@ -1219,6 +1381,16 @@ struct mp_decoder_wrapper *mp_decoder_wrapper_create(struct mp_filter *parent,
     p->codec = p->header->codec;
     p->play_dir = 1;
     mp_filter_add_pin(public_f, MP_PIN_OUT, "out");
+
+    if (src->group && src->group->lavfi_graph) {
+        const char *tag = src->type == STREAM_AUDIO ? "!ad" : "!vd";
+        p->log = mp_log_new(p, parent->global->log, tag);
+        public_f->log = p->log;
+        if (!init_group_decoder(p, public_f))
+            goto error;
+        public_f_reset(public_f);
+        return &p->public;
+    }
 
     if (p->header->type == STREAM_VIDEO) {
         p->log = mp_log_new(p, parent->global->log, "!vd");
@@ -1275,13 +1447,14 @@ struct mp_decoder_wrapper *mp_decoder_wrapper_create(struct mp_filter *parent,
 
     decf_reset(p->decf);
 
+    struct mp_pin *out_pin;
     if (p->queue) {
         struct mp_filter *f_in =
             mp_async_queue_create_filter(public_f, MP_PIN_OUT, p->queue);
         struct mp_filter *f_out =
             mp_async_queue_create_filter(p->decf, MP_PIN_IN, p->queue);
-        mp_pin_connect(public_f->ppins[0], f_in->pins[0]);
         mp_pin_connect(f_out->pins[0], p->decf->pins[0]);
+        out_pin = f_in->pins[0];
 
         p->dec_thread_valid = true;
         if (mp_thread_create(&p->dec_thread, dec_thread, p)) {
@@ -1289,8 +1462,10 @@ struct mp_decoder_wrapper *mp_decoder_wrapper_create(struct mp_filter *parent,
             goto error;
         }
     } else {
-        mp_pin_connect(public_f->ppins[0], p->decf->pins[0]);
+        out_pin = p->decf->pins[0];
     }
+
+    mp_pin_connect(public_f->ppins[0], out_pin);
 
     public_f_reset(public_f);
 
